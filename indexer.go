@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -16,6 +17,11 @@ type IndexerClient struct {
 }
 
 func NewIndexerClient(url string) *IndexerClient {
+	// Normalize URL: ensure it ends with /query
+	url = strings.TrimRight(url, "/")
+	if strings.HasSuffix(url, "/graphql") {
+		url += "/query"
+	}
 	return &IndexerClient{
 		url: url,
 		client: &http.Client{
@@ -47,6 +53,7 @@ func (c *IndexerClient) query(ctx context.Context, query string, vars map[string
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
 
 	resp, err := c.client.Do(req)
 	if err != nil {
@@ -316,6 +323,97 @@ func (c *IndexerClient) GetMsgRunTransactions(ctx context.Context) ([]Transactio
 	q := fmt.Sprintf(`{
 		getTransactions(
 			where: { messages: { value: { MsgRun: {} } } }
+			order: { heightAndIndex: DESC }
+		) { %s }
+	}`, txFields)
+	err := c.query(ctx, q, nil, &result)
+	return result.GetTransactions, err
+}
+
+type Block struct {
+	Hash               string `json:"hash"`
+	Height             int    `json:"height"`
+	ChainID            string `json:"chain_id"`
+	Time               string `json:"time"`
+	NumTxs             int    `json:"num_txs"`
+	TotalTxs           int    `json:"total_txs"`
+	ProposerAddressRaw string `json:"proposer_address_raw"`
+}
+
+const blockFields = `
+	hash
+	height
+	chain_id
+	time
+	num_txs
+	total_txs
+	proposer_address_raw
+`
+
+// GetRecentBlocks fetches recent blocks.
+func (c *IndexerClient) GetRecentBlocks(ctx context.Context, limit int) ([]Block, error) {
+	var result struct {
+		GetBlocks []Block `json:"getBlocks"`
+	}
+	q := fmt.Sprintf(`{
+		getBlocks(
+			where: {}
+			order: { height: DESC }
+		) { %s }
+	}`, blockFields)
+	err := c.query(ctx, q, nil, &result)
+	if err != nil {
+		return nil, err
+	}
+	if limit > 0 && len(result.GetBlocks) > limit {
+		return result.GetBlocks[:limit], nil
+	}
+	return result.GetBlocks, err
+}
+
+// GetBlock fetches a single block by height.
+func (c *IndexerClient) GetBlock(ctx context.Context, height int) (*Block, error) {
+	var result struct {
+		GetBlocks []Block `json:"getBlocks"`
+	}
+	q := fmt.Sprintf(`{
+		getBlocks(
+			where: { height: { eq: %d } }
+		) { %s }
+	}`, height, blockFields)
+	err := c.query(ctx, q, nil, &result)
+	if err != nil {
+		return nil, err
+	}
+	if len(result.GetBlocks) == 0 {
+		return nil, fmt.Errorf("block not found: %d", height)
+	}
+	return &result.GetBlocks[0], nil
+}
+
+// GetTransactionsByRealm fetches calls to a specific realm function.
+func (c *IndexerClient) GetTransactionsByRealmFunc(ctx context.Context, pkgPath, funcName string) ([]Transaction, error) {
+	var result struct {
+		GetTransactions []Transaction `json:"getTransactions"`
+	}
+	q := fmt.Sprintf(`{
+		getTransactions(
+			where: { messages: { value: { MsgCall: { pkg_path: { eq: "%s" }, func: { eq: "%s" } } } } }
+			order: { heightAndIndex: DESC }
+		) { %s }
+	}`, pkgPath, funcName, txFields)
+	err := c.query(ctx, q, nil, &result)
+	return result.GetTransactions, err
+}
+
+// GetGovDAOTransactions fetches transactions involving govdao realms.
+func (c *IndexerClient) GetGovDAOTransactions(ctx context.Context) ([]Transaction, error) {
+	var result struct {
+		GetTransactions []Transaction `json:"getTransactions"`
+	}
+	q := fmt.Sprintf(`{
+		getTransactions(
+			where: { messages: { value: { MsgCall: { pkg_path: { like: "%%govdao%%"} } } } }
 			order: { heightAndIndex: DESC }
 		) { %s }
 	}`, txFields)

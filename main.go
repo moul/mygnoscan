@@ -91,6 +91,12 @@ func run() error {
 	mux.HandleFunc("GET /api/address/{addr}", api.HandleAddress)
 	mux.HandleFunc("GET /api/search", api.HandleSearch)
 	mux.HandleFunc("GET /api/deps/{path...}", api.HandleDeps)
+	mux.HandleFunc("GET /api/blocks", api.HandleBlocks)
+	mux.HandleFunc("GET /api/block/{height}", api.HandleBlock)
+	mux.HandleFunc("GET /api/validators", api.HandleValidators)
+	mux.HandleFunc("GET /api/tokens", api.HandleTokens)
+	mux.HandleFunc("GET /api/accounts", api.HandleAccounts)
+	mux.HandleFunc("GET /api/govdao", api.HandleGovDAO)
 
 	// Frontend
 	frontendSub, err := fs.Sub(frontendFS, "frontend")

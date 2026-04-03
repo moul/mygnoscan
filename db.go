@@ -502,3 +502,74 @@ func (d *DB) Search(q string) ([]PackageInfo, error) {
 	}
 	return pkgs, rows.Err()
 }
+
+type TokenInfo struct {
+	Path      string `json:"path"`
+	Name      string `json:"name"`
+	Creator   string `json:"creator"`
+	CallCount int    `json:"call_count"`
+}
+
+func (d *DB) GetTokenPackages() ([]TokenInfo, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	rows, err := d.db.Query(`
+		SELECT DISTINCT p.path, p.name, p.creator
+		FROM packages p
+		JOIN dependencies dep ON dep.package_path = p.path
+		WHERE dep.import_path LIKE '%grc20%'
+		ORDER BY p.block_height DESC
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var tokens []TokenInfo
+	for rows.Next() {
+		var t TokenInfo
+		if err := rows.Scan(&t.Path, &t.Name, &t.Creator); err != nil {
+			return nil, err
+		}
+		d.db.QueryRow(`SELECT COUNT(*) FROM calls WHERE pkg_path = ?`, t.Path).Scan(&t.CallCount)
+		tokens = append(tokens, t)
+	}
+	return tokens, rows.Err()
+}
+
+type AccountInfo struct {
+	Address     string `json:"address"`
+	CallCount   int    `json:"call_count"`
+	DeployCount int    `json:"deploy_count"`
+	MsgRunCount int    `json:"msgrun_count"`
+}
+
+func (d *DB) GetActiveAccounts() ([]AccountInfo, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	rows, err := d.db.Query(`
+		SELECT address, SUM(call_count), SUM(deploy_count), SUM(run_count)
+		FROM (
+			SELECT caller as address, COUNT(*) as call_count, 0 as deploy_count, 0 as run_count FROM calls GROUP BY caller
+			UNION ALL
+			SELECT creator as address, 0, COUNT(*), 0 FROM packages GROUP BY creator
+			UNION ALL
+			SELECT caller as address, 0, 0, COUNT(*) FROM msg_runs GROUP BY caller
+		)
+		GROUP BY address
+		ORDER BY (SUM(call_count) + SUM(deploy_count) + SUM(run_count)) DESC
+		LIMIT 100
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var accounts []AccountInfo
+	for rows.Next() {
+		var a AccountInfo
+		if err := rows.Scan(&a.Address, &a.CallCount, &a.DeployCount, &a.MsgRunCount); err != nil {
+			return nil, err
+		}
+		accounts = append(accounts, a)
+	}
+	return accounts, rows.Err()
+}

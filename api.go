@@ -145,6 +145,71 @@ func (a *API) HandleSearch(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, results)
 }
 
+func (a *API) HandleBlocks(w http.ResponseWriter, r *http.Request) {
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	if limit == 0 {
+		limit = 50
+	}
+	blocks, err := a.client.GetRecentBlocks(r.Context(), limit)
+	if err != nil {
+		jsonError(w, err.Error(), 500)
+		return
+	}
+	jsonResponse(w, blocks)
+}
+
+func (a *API) HandleBlock(w http.ResponseWriter, r *http.Request) {
+	height, err := strconv.Atoi(r.PathValue("height"))
+	if err != nil {
+		jsonError(w, "invalid block height", 400)
+		return
+	}
+	block, err := a.client.GetBlock(r.Context(), height)
+	if err != nil {
+		jsonError(w, err.Error(), 404)
+		return
+	}
+	jsonResponse(w, block)
+}
+
+func (a *API) HandleValidators(w http.ResponseWriter, r *http.Request) {
+	// Get validator registrations from gno.land/r/gnops/valopers
+	txs, err := a.client.GetTransactionsByPkgPath(r.Context(), "gno.land/r/gnops/valopers")
+	if err != nil {
+		jsonError(w, err.Error(), 500)
+		return
+	}
+	jsonResponse(w, txs)
+}
+
+func (a *API) HandleTokens(w http.ResponseWriter, r *http.Request) {
+	// Get all packages that look like token contracts (import grc20)
+	tokens, err := a.db.GetTokenPackages()
+	if err != nil {
+		jsonError(w, err.Error(), 500)
+		return
+	}
+	jsonResponse(w, tokens)
+}
+
+func (a *API) HandleAccounts(w http.ResponseWriter, r *http.Request) {
+	accounts, err := a.db.GetActiveAccounts()
+	if err != nil {
+		jsonError(w, err.Error(), 500)
+		return
+	}
+	jsonResponse(w, accounts)
+}
+
+func (a *API) HandleGovDAO(w http.ResponseWriter, r *http.Request) {
+	txs, err := a.client.GetGovDAOTransactions(r.Context())
+	if err != nil {
+		jsonError(w, err.Error(), 500)
+		return
+	}
+	jsonResponse(w, txs)
+}
+
 func (a *API) HandleDeps(w http.ResponseWriter, r *http.Request) {
 	path := "gno.land/" + r.PathValue("path")
 	path = strings.TrimRight(path, "/")
