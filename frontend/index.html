@@ -270,7 +270,7 @@ function timeAgo(t) {
   if (s < 60) return s + 's ago'; if (s < 3600) return Math.floor(s/60) + 'm ago';
   if (s < 86400) return Math.floor(s/3600) + 'h ago'; return Math.floor(s/86400) + 'd ago';
 }
-function blockLabel(h) { return h === 0 ? 'genesis' : String(h); }
+function blockLabel(h) { return h === 0 ? 'genesis' : fmtNum(h); }
 function blockLink(h) { return link(blockLabel(h), () => navigate('/blocks')); }
 // Parse text for g1... addresses and gno.land/... paths, return a span with links
 function linkify(text) {
@@ -850,7 +850,15 @@ function renderMessageEl(msg, index) {
       addRow('function', v.func); addRow('args', (v.args || []).join(', ') || '-'); break;
     case 'MsgRun':
       addRow('caller', link(v.caller, () => navigate('/address/' + v.caller)));
-      addRow('files', (v.package?.files || []).map(f => f.name).join(', ')); break;
+      for (const f of (v.package?.files || [])) {
+        const fileEl = el('div', { style: { marginTop: '8px' } },
+          el('div', { style: { color: 'var(--accent)', fontSize: '12px', marginBottom: '4px' } }, f.name));
+        if (f.body) fileEl.appendChild(el('pre', {}, f.body));
+        else fileEl.appendChild(el('span', { style: { color: 'var(--fg2)' } }, '(no source)'));
+        addRow('source', fileEl);
+      }
+      if (!(v.package?.files || []).length) addRow('files', '-');
+      break;
     case 'BankMsgSend':
       addRow('from', link(v.from_address, () => navigate('/address/' + v.from_address)));
       addRow('to', link(v.to_address, () => navigate('/address/' + v.to_address)));
