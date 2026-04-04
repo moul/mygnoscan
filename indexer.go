@@ -288,29 +288,24 @@ func (c *IndexerClient) GetAllPackages(ctx context.Context) ([]Transaction, erro
 	return result.GetTransactions, err
 }
 
-// GetRecentTransactions fetches transactions from the last N blocks.
-func (c *IndexerClient) GetRecentTransactions(ctx context.Context, blockRange int) ([]Transaction, error) {
-	if blockRange <= 0 {
-		blockRange = 1000
-	}
-	latest, err := c.LatestBlockHeight(ctx)
-	if err != nil {
-		return nil, err
-	}
-	fromHeight := latest - blockRange
-	if fromHeight < 0 {
-		fromHeight = 0
-	}
+// GetRecentTransactions fetches the most recent transactions, limited to maxResults.
+func (c *IndexerClient) GetRecentTransactions(ctx context.Context, maxResults int) ([]Transaction, error) {
 	var result struct {
 		GetTransactions []Transaction `json:"getTransactions"`
 	}
 	q := fmt.Sprintf(`{
 		getTransactions(
-			where: { block_height: { gt: %d } }
+			where: {}
 			order: { heightAndIndex: DESC }
 		) { %s }
-	}`, fromHeight, txFieldsLight)
-	err = c.query(ctx, q, nil, &result)
+	}`, txFieldsLight)
+	err := c.query(ctx, q, nil, &result)
+	if err != nil {
+		return nil, err
+	}
+	if maxResults > 0 && len(result.GetTransactions) > maxResults {
+		return result.GetTransactions[:maxResults], nil
+	}
 	return result.GetTransactions, err
 }
 
