@@ -74,6 +74,8 @@ pre { background: var(--bg2); border: 1px solid var(--border); border-radius: 4p
 .raw-toggle:hover { color: var(--accent); }
 .raw-content { display: none; margin-top: 8px; }
 .raw-content.open { display: block; }
+/* Address highlight on hover */
+[data-addr].addr-highlight { background: rgba(78, 205, 196, 0.2); border-radius: 2px; }
 @media (max-width: 768px) { .stats-bar { gap: 12px; } .stat .value { font-size: 16px; } .search-box input { width: 160px; } nav { gap: 8px; } }
 </style>
 </head>
@@ -91,6 +93,7 @@ pre { background: var(--bg2); border: 1px solid var(--border); border-radius: 4p
       <a onclick="navigate('/tokens')" id="nav-tokens">tokens</a>
       <a onclick="navigate('/validators')" id="nav-validators">validators</a>
       <a onclick="navigate('/govdao')" id="nav-govdao">govdao</a>
+      <a onclick="navigate('/events')" id="nav-events">events</a>
     </nav>
     <div class="search-box">
       <input type="text" id="search-input" placeholder="search...">
@@ -131,6 +134,8 @@ pre { background: var(--bg2); border: 1px solid var(--border); border-radius: 4p
     <div id="validators-content"></div></div></main></div>
   <div class="view" id="view-govdao"><main><div class="section"><div class="section-title">govdao activity</div>
     <table><thead><tr><th>block</th><th>caller</th><th>function</th><th>status</th><th>tx</th></tr></thead><tbody id="govdao-list"></tbody></table></div></main></div>
+  <div class="view" id="view-events"><main><div class="section"><div class="section-title">recent events</div>
+    <table><thead><tr><th>block</th><th>realm</th><th>type</th><th>attributes</th><th>tx</th></tr></thead><tbody id="events-list"></tbody></table></div></main></div>
   <div class="view" id="view-realm-detail"><main>
     <div id="realm-header"></div>
     <div class="tabs" id="realm-tabs"></div>
@@ -163,7 +168,41 @@ function el(tag, attrs, ...children) {
 function clear(id) { const e = document.getElementById(id); e.textContent = ''; return e; }
 function badge(type, text) { return el('span', { className: 'badge badge-' + type }, text); }
 function link(text, onclick) { const a = el('a', { href: '#' }, text); a.addEventListener('click', (e) => { e.preventDefault(); onclick(); }); return a; }
-function shortAddr(addr) { return (!addr || addr.length <= 16) ? (addr || '') : addr.slice(0, 10) + '...' + addr.slice(-6); }
+const KNOWN_ADDRS = {
+  'g1edq4dugw0sgat4zxcw9xardvuydqf6cgleuc8p': 'genesis_deployer',
+  'g1manfred47kzduec920z88wfr64ylksmdcedlf5': 'manfred',
+  'g1r929wt2qplfawe4lvqv9zuwfdcz4vxdun7qh8l': 'r929',
+  'g16jpf0puufcpcjkph5nxueec8etpcldz7zwgydq': 'jp16',
+  'g1jg8mtutu9khhfwc4nxmuhcpftf0pajdhfvsqf5': 'jae',
+  'g1plf3fmy0h4395jcxxh63g7mzeypr06f9yrdk4d': 'plf3',
+  'g1m0rgan0rla00ygmdmp55f5m0unvsvknluyg2a4': 'morgan',
+  'g1g73v2anukg4ej7axwqpthsatzrxjsh0wk797da': 'g73v',
+  'g1778y2yphxs2wpuaflsy5y9qwcd4gttn4g5yjx5': '778y',
+  'g1g3lsfxhvaqgdv4ccemwpnms4fv6t3aq3p5z6u7': 'g3ls',
+  'g1ker4vvggvsyatexxn3hkthp2hu80pkhrwmuczr': 'gnocore_val',
+  'g1lyejwwmxef5tn8nx69saykmgm8rlr4xq9yeh3z': 'lye_j',
+  'g125em6arxsnj49vx35f0n0z34putv5ty3376fg5': '125e',
+  'g1x0ytm7qt4l80djl2n05mz9v0u285vwz03rktf9': 'x0yt',
+};
+function addrLabel(addr) { return KNOWN_ADDRS[addr] || ''; }
+function shortAddr(addr) {
+  if (!addr) return '';
+  const label = KNOWN_ADDRS[addr];
+  if (label) return label;
+  return addr.length <= 16 ? addr : addr.slice(0, 10) + '...' + addr.slice(-6);
+}
+function addrLink(addr) {
+  const label = KNOWN_ADDRS[addr];
+  const span = el('span');
+  span.setAttribute('data-addr', addr);
+  const a = link(label || addr, () => navigate('/address/' + addr));
+  a.setAttribute('data-addr', addr);
+  span.appendChild(a);
+  if (label) {
+    span.appendChild(el('span', { className: 'block-ctx' }, ' ' + addr.slice(0, 8) + '...'));
+  }
+  return span;
+}
 function statusBadge(s) { return s ? badge('ok', 'ok') : badge('fail', 'fail'); }
 function fmtNum(n) { return typeof n === 'number' ? n.toLocaleString() : String(n); }
 // Skeleton loading placeholders
@@ -222,6 +261,21 @@ function timeAgo(t) {
   if (s < 86400) return Math.floor(s/3600) + 'h ago'; return Math.floor(s/86400) + 'd ago';
 }
 function blockLabel(h) { return h === 0 ? 'genesis' : String(h); }
+function blockLink(h) { return link(blockLabel(h), () => navigate('/blocks')); }
+// Parse text for g1... addresses and gno.land/... paths, return a span with links
+function linkify(text) {
+  const span = el('span');
+  const pattern = /(g1[a-z0-9]{38,42})|(gno\.land\/[a-z0-9/_]+)/g;
+  let last = 0, m;
+  while ((m = pattern.exec(text)) !== null) {
+    if (m.index > last) span.appendChild(document.createTextNode(text.slice(last, m.index)));
+    if (m[1]) { const al = addrLink(m[1]); span.appendChild(al); }
+    else if (m[2]) span.appendChild(link(m[2], () => navigate('/realm/' + m[2].replace('gno.land/', ''))));
+    last = pattern.lastIndex;
+  }
+  if (last < text.length) span.appendChild(document.createTextNode(text.slice(last)));
+  return span;
+}
 
 async function api(path) { const r = await fetch('/api/' + path); if (!r.ok) throw new Error(await r.text()); return r.json(); }
 
@@ -247,7 +301,9 @@ function route() {
   else if (path === '/tokens') { view = 'tokens'; }
   else if (path === '/validators') { view = 'validators'; }
   else if (path === '/govdao') { view = 'govdao'; }
+  else if (path === '/events') { view = 'events'; }
   else if (path.startsWith('/realm/')) { view = 'realm-detail'; data = 'gno.land/' + path.slice(7); }
+  const urlTab = new URLSearchParams(window.location.search).get('tab');
   else if (path.startsWith('/tx/')) { view = 'tx-detail'; data = decodeURIComponent(path.slice(4)); }
   else if (path.startsWith('/address/')) { view = 'address-detail'; data = path.slice(9); }
 
@@ -266,7 +322,8 @@ function route() {
     case 'tokens': loadTokens(); break;
     case 'validators': loadValidators(); break;
     case 'govdao': loadGovDAO(); break;
-    case 'realm-detail': loadRealmDetail(data); break;
+    case 'events': loadEvents(); break;
+    case 'realm-detail': loadRealmDetail(data, urlTab); break;
     case 'tx-detail': loadTxDetail(data); break;
     case 'address-detail': loadAddressDetail(data); break;
   }
@@ -314,8 +371,8 @@ async function loadRealms() {
     for (const r of (data || [])) {
       tbody.appendChild(el('tr', {},
         el('td', {}, link(r.path, () => navigate('/realm/' + r.path.replace('gno.land/', '')))),
-        el('td', {}, r.name), el('td', { className: 'truncate' }, link(shortAddr(r.creator), () => navigate('/address/' + r.creator))),
-        el('td', {}, blockLabel(r.block_height)), el('td', {}, String(r.num_files))
+        el('td', {}, r.name), el('td', { className: 'truncate' }, addrLink(r.creator)),
+        el('td', {}, blockLink(r.block_height)), el('td', {}, String(r.num_files))
       ));
     }
   } catch (err) { console.error(err); }
@@ -329,8 +386,8 @@ async function loadPackages() {
     for (const p of (data || [])) {
       tbody.appendChild(el('tr', {},
         el('td', {}, link(p.path, () => navigate('/realm/' + p.path.replace('gno.land/', '')))),
-        el('td', {}, p.name), el('td', { className: 'truncate' }, link(shortAddr(p.creator), () => navigate('/address/' + p.creator))),
-        el('td', {}, blockLabel(p.block_height)), el('td', {}, String(p.num_files))
+        el('td', {}, p.name), el('td', { className: 'truncate' }, addrLink(p.creator)),
+        el('td', {}, blockLink(p.block_height)), el('td', {}, String(p.num_files))
       ));
     }
   } catch (err) { console.error(err); }
@@ -345,7 +402,7 @@ async function loadTxs() {
       const msg = tx.messages?.[0];
       tbody.appendChild(el('tr', {},
         el('td', {}, txLink(tx.hash, tx.block_height)),
-        el('td', {}, blockLabel(tx.block_height)),
+        el('td', {}, blockLink(tx.block_height)),
         el('td', {}, typeBadge(msg?.value?.__typename)),
         el('td', {}, txDetail(msg)),
         el('td', {}, statusBadge(tx.success))
@@ -379,7 +436,7 @@ async function loadAccounts() {
     for (const a of (data || [])) {
       const total = a.call_count + a.deploy_count + a.msgrun_count;
       tbody.appendChild(el('tr', {},
-        el('td', {}, link(a.address, () => navigate('/address/' + a.address))),
+        el('td', {}, addrLink(a.address)),
         el('td', {}, String(a.call_count)),
         el('td', {}, String(a.deploy_count)),
         el('td', {}, String(a.msgrun_count)),
@@ -397,7 +454,7 @@ async function loadTokens() {
       tbody.appendChild(el('tr', {},
         el('td', {}, link(t.path, () => navigate('/realm/' + t.path.replace('gno.land/', '')))),
         el('td', {}, t.name),
-        el('td', { className: 'truncate' }, link(shortAddr(t.creator), () => navigate('/address/' + t.creator))),
+        el('td', { className: 'truncate' }, addrLink(t.creator)),
         el('td', {}, String(t.call_count))
       ));
     }
@@ -408,58 +465,122 @@ async function loadTokens() {
 }
 
 async function loadValidators() {
+  const container = clear('validators-content');
+  skeletonRows(container, 3, 5);
   try {
-    const data = await api('validators');
-    const container = clear('validators-content');
-    if (!(data || []).length) {
-      container.appendChild(el('div', { style: { color: 'var(--fg2)', padding: '20px' } }, 'no validator transactions found'));
-      return;
+    const [blocks, valopers] = await Promise.all([api('blocks?limit=100'), api('validators')]);
+    container.textContent = '';
+    // Active validator set from recent block proposers
+    const proposerCounts = {};
+    for (const b of (blocks || [])) {
+      const p = b.proposer_address_raw;
+      proposerCounts[p] = (proposerCounts[p] || 0) + 1;
     }
-    const tbl = el('table');
-    tbl.appendChild(el('thead', {}, el('tr', {}, el('th', {}, 'block'), el('th', {}, 'caller'), el('th', {}, 'function'), el('th', {}, 'args'), el('th', {}, 'status'))));
-    const tbody = el('tbody');
-    for (const tx of data) {
-      for (const msg of tx.messages) {
-        if (msg.value.__typename === 'MsgCall') {
-          tbody.appendChild(el('tr', {},
-            el('td', {}, link(blockLabel(tx.block_height), () => navigate('/tx/' + encodeURIComponent(tx.hash)))),
-            el('td', { className: 'truncate' }, link(shortAddr(msg.value.caller), () => navigate('/address/' + msg.value.caller))),
-            el('td', {}, msg.value.func),
-            el('td', { className: 'truncate' }, (msg.value.args || []).slice(0, 2).join(', ')),
-            el('td', {}, statusBadge(tx.success))
-          ));
+    const sorted = Object.entries(proposerCounts).sort((a, b) => b[1] - a[1]);
+    container.appendChild(el('div', { className: 'section-title' }, 'active validator set (' + sorted.length + ' validators)'));
+    const vsTbl = el('table');
+    vsTbl.appendChild(el('thead', {}, el('tr', {}, el('th', {}, 'proposer address'), el('th', {}, 'blocks proposed'), el('th', {}, 'share'))));
+    const vsBody = el('tbody');
+    const total = (blocks || []).length;
+    for (const [addr, count] of sorted) {
+      vsBody.appendChild(el('tr', {},
+        el('td', {}, addrLink(addr)),
+        el('td', {}, fmtNum(count)),
+        el('td', {}, (count / total * 100).toFixed(1) + '%')
+      ));
+    }
+    vsTbl.appendChild(vsBody); container.appendChild(vsTbl);
+    // Valoper registrations
+    if ((valopers || []).length) {
+      container.appendChild(el('div', { className: 'section-title', style: { marginTop: '24px' } }, 'valoper registrations'));
+      const tbl = el('table');
+      tbl.appendChild(el('thead', {}, el('tr', {}, el('th', {}, 'block'), el('th', {}, 'caller'), el('th', {}, 'function'), el('th', {}, 'moniker'), el('th', {}, 'status'))));
+      const tbody = el('tbody');
+      for (const tx of valopers) {
+        for (const msg of tx.messages) {
+          if (msg.value.__typename === 'MsgCall') {
+            tbody.appendChild(el('tr', {},
+              el('td', {}, link(blockLabel(tx.block_height), () => navigate('/tx/' + encodeURIComponent(tx.hash)))),
+              el('td', { className: 'truncate' }, addrLink(msg.value.caller)),
+              el('td', {}, msg.value.func),
+              el('td', {}, (msg.value.args || [])[0] || '-'),
+              el('td', {}, statusBadge(tx.success))
+            ));
+          }
         }
       }
+      tbl.appendChild(tbody); container.appendChild(tbl);
     }
-    tbl.appendChild(tbody); container.appendChild(tbl);
+  } catch (err) { console.error(err); }
+}
+
+async function loadEvents() {
+  const tbody = clear('events-list');
+  skeletonRows(tbody, 5, 10);
+  try {
+    const data = await api('allevents');
+    const list = clear('events-list');
+    if (!(data || []).length) {
+      list.appendChild(el('tr', {}, el('td', { colspan: '5', style: { color: 'var(--fg2)' } }, 'no events found')));
+      return;
+    }
+    for (const item of data) {
+      for (const ev of item.events) {
+        const attrStr = (ev.attrs || []).map(a => a.key + '=' + a.value).join(', ');
+        list.appendChild(el('tr', {},
+          el('td', {}, blockLink(item.block_height)),
+          el('td', {}, ev.pkg_path ? link(ev.pkg_path, () => navigate('/realm/' + ev.pkg_path.replace('gno.land/', ''))) : el('span', {}, '-')),
+          el('td', {}, badge('realm', ev.type || 'event')),
+          el('td', {}, attrStr ? linkify(attrStr) : el('span', {}, '-')),
+          el('td', {}, txLink(item.tx_hash, item.block_height))
+        ));
+      }
+    }
   } catch (err) { console.error(err); }
 }
 
 async function loadGovDAO() {
+  const tbody = clear('govdao-list');
+  skeletonRows(tbody, 5, 5);
   try {
-    const data = await api('govdao');
-    const tbody = clear('govdao-list');
-    if (!(data || []).length) {
-      tbody.appendChild(el('tr', {}, el('td', { colspan: '5', style: { color: 'var(--fg2)' } }, 'no govdao transactions found')));
-      return;
-    }
-    for (const tx of data) {
-      for (const msg of tx.messages) {
-        if (msg.value.__typename === 'MsgCall') {
-          tbody.appendChild(el('tr', {},
-            el('td', {}, blockLabel(tx.block_height)),
-            el('td', { className: 'truncate' }, link(shortAddr(msg.value.caller), () => navigate('/address/' + msg.value.caller))),
-            el('td', {}, msg.value.pkg_path + '::' + msg.value.func),
-            el('td', {}, statusBadge(tx.success)),
-            el('td', {}, txLink(tx.hash, tx.block_height))
+    // Fetch both events and calls for gov/dao
+    const [events, calls] = await Promise.all([api('events/r/gov/dao'), api('govdao')]);
+    const list = clear('govdao-list');
+    // Events (proposals)
+    if ((events || []).length) {
+      // Replace the table header
+      const parent = list.closest('table');
+      const thead = parent.querySelector('thead');
+      thead.textContent = '';
+      thead.appendChild(el('tr', {}, el('th', {}, 'block'), el('th', {}, 'event'), el('th', {}, 'details'), el('th', {}, 'origin'), el('th', {}, 'tx')));
+      for (const item of events) {
+        // Find the originating message
+        let origin = '';
+        const tx = calls?.find(t => t.hash === item.tx_hash);
+        if (tx) {
+          const msg = tx.messages?.[0]?.value;
+          if (msg?.__typename === 'MsgCall') origin = msg.pkg_path + '::' + msg.func;
+          else if (msg?.__typename === 'MsgRun') origin = 'MsgRun by ' + shortAddr(msg.caller);
+        }
+        for (const ev of item.events) {
+          const attrStr = (ev.attrs || []).map(a => a.key + '=' + a.value).join(', ');
+          list.appendChild(el('tr', {},
+            el('td', {}, blockLink(item.block_height)),
+            el('td', {}, badge('realm', ev.type || 'event')),
+            el('td', {}, attrStr ? linkify(attrStr) : el('span', {}, '-')),
+            el('td', {}, origin),
+            el('td', {}, txLink(item.tx_hash, item.block_height))
           ));
         }
       }
     }
+    if (!(events || []).length && !(calls || []).length) {
+      list.appendChild(el('tr', {}, el('td', { colspan: '5', style: { color: 'var(--fg2)' } }, 'no govdao activity found')));
+    }
   } catch (err) { console.error(err); }
 }
 
-async function loadRealmDetail(path) {
+async function loadRealmDetail(path, initialTab) {
   const header = clear('realm-header');
   skeletonBlock(header);
   try {
@@ -469,17 +590,19 @@ async function loadRealmDetail(path) {
     const meta = el('div', { style: { color: 'var(--fg2)', marginBottom: '16px' } },
       detail.is_realm ? badge('realm', 'realm') : badge('pkg', 'package'));
     meta.append(' deployed by ');
-    meta.appendChild(link(shortAddr(detail.creator), () => navigate('/address/' + detail.creator)));
+    meta.appendChild(addrLink(detail.creator));
     meta.append(' at ' + blockLabel(detail.block_height) + ' \u00b7 ' + detail.num_files + ' files \u00b7 ' + detail.call_count + ' calls');
     header.appendChild(meta);
     const tabs = clear('realm-tabs');
     const tabNames = ['info', 'source', 'calls', 'events', 'deps', 'graph'];
-    tabNames.forEach((name, i) => {
-      const tab = el('div', { className: 'tab' + (i === 0 ? ' active' : ''), onclick: () => switchTab(name, tab) }, name);
+    const activeTab = initialTab && tabNames.includes(initialTab) ? initialTab : 'info';
+    tabNames.forEach((name) => {
+      const tab = el('div', { className: 'tab' + (name === activeTab ? ' active' : ''), onclick: () => switchTab(name, tab) }, name);
       tabs.appendChild(tab);
     });
     // Info
-    const info = clear('tab-info'); info.classList.add('active');
+    const info = clear('tab-info');
+    if (activeTab === 'info') info.classList.add('active'); else info.classList.remove('active');
     const tbl = el('table');
     for (const [l, v] of [['path', detail.path], ['name', detail.name], ['creator', detail.creator]]) {
       tbl.appendChild(el('tr', {}, el('td', { style: { color: 'var(--fg2)' } }, l), el('td', {}, v)));
@@ -502,14 +625,14 @@ async function loadRealmDetail(path) {
     info.appendChild(tbl);
     info.appendChild(rawJsonToggle(detail));
     // Source
-    const src = clear('tab-source'); src.classList.remove('active');
+    const src = clear('tab-source'); if (activeTab === 'source') src.classList.add('active'); else src.classList.remove('active');
     for (const f of (detail.files || [])) {
       src.appendChild(el('div', { style: { marginBottom: '16px' } },
         el('div', { style: { color: 'var(--accent)', marginBottom: '4px', fontSize: '12px' } }, f.name),
         el('pre', {}, f.body)));
     }
     // Calls + MsgRuns that import this realm
-    const calls = clear('tab-calls'); calls.classList.remove('active');
+    const calls = clear('tab-calls'); if (activeTab === 'calls') calls.classList.add('active'); else calls.classList.remove('active');
     // Direct calls section
     if ((detail.recent_calls || []).length) {
       calls.appendChild(el('div', { className: 'section-title' }, 'direct calls (' + fmtNum(detail.call_count) + ' total)'));
@@ -518,8 +641,8 @@ async function loadRealmDetail(path) {
       const callBody = el('tbody');
       for (const c of (detail.recent_calls || [])) {
         callBody.appendChild(el('tr', {},
-          el('td', {}, blockLabel(c.block_height)),
-          el('td', { className: 'truncate' }, link(shortAddr(c.caller), () => navigate('/address/' + c.caller))),
+          el('td', {}, blockLink(c.block_height)),
+          el('td', { className: 'truncate' }, addrLink(c.caller)),
           el('td', {}, c.func_name), el('td', {}, statusBadge(c.success)),
           el('td', {}, txLink(c.tx_hash, c.block_height))
         ));
@@ -536,8 +659,8 @@ async function loadRealmDetail(path) {
       const runBody = el('tbody');
       for (const r of detail.msgrun_refs) {
         runBody.appendChild(el('tr', {},
-          el('td', {}, blockLabel(r.block_height)),
-          el('td', { className: 'truncate' }, link(shortAddr(r.caller), () => navigate('/address/' + r.caller))),
+          el('td', {}, blockLink(r.block_height)),
+          el('td', { className: 'truncate' }, addrLink(r.caller)),
           el('td', {}, statusBadge(r.success)),
           el('td', {}, txLink(r.tx_hash, r.block_height))
         ));
@@ -545,7 +668,7 @@ async function loadRealmDetail(path) {
       runTbl.appendChild(runBody); calls.appendChild(runTbl);
     }
     // Events tab (loaded from indexer)
-    const eventsEl = clear('tab-events'); eventsEl.classList.remove('active');
+    const eventsEl = clear('tab-events'); if (activeTab === 'events') eventsEl.classList.add('active'); else eventsEl.classList.remove('active');
     skeletonRows(eventsEl, 4, 3);
     (async () => {
       try {
@@ -561,11 +684,11 @@ async function loadRealmDetail(path) {
         const evBody = el('tbody');
         for (const item of evData) {
           for (const ev of item.events) {
-            const attrs = (ev.attrs || []).map(a => a.key + '=' + a.value).join(', ');
+            const attrStr = (ev.attrs || []).map(a => a.key + '=' + a.value).join(', ');
             evBody.appendChild(el('tr', {},
-              el('td', {}, blockLabel(item.block_height)),
+              el('td', {}, blockLink(item.block_height)),
               el('td', {}, badge('realm', ev.type || 'event')),
-              el('td', {}, attrs || '-'),
+              el('td', {}, attrStr ? linkify(attrStr) : el('span', {}, '-')),
               el('td', {}, txLink(item.tx_hash, item.block_height))
             ));
           }
@@ -574,7 +697,7 @@ async function loadRealmDetail(path) {
       } catch (err) { eventsEl.textContent = ''; eventsEl.appendChild(el('div', { style: { color: 'var(--red)' } }, 'Error loading events: ' + err.message)); }
     })();
     // Deps
-    const depsEl = clear('tab-deps'); depsEl.classList.remove('active');
+    const depsEl = clear('tab-deps'); if (activeTab === 'deps') depsEl.classList.add('active'); else depsEl.classList.remove('active');
     const depsPath = path.replace('gno.land/', '');
     const [imports, dependents] = await Promise.all([api('deps/' + depsPath), api('deps/' + depsPath + '?dir=dependents')]);
     const grid = el('div', { style: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '24px' } });
@@ -582,7 +705,7 @@ async function loadRealmDetail(path) {
     grid.appendChild(buildDepTree('dependents (what uses this)', dependents, path));
     depsEl.appendChild(grid);
     // Graph
-    document.getElementById('tab-graph').classList.remove('active');
+    const graphEl = document.getElementById('tab-graph'); if (activeTab === 'graph') graphEl.classList.add('active'); else graphEl.classList.remove('active');
     renderDepGraph(imports, dependents, path);
   } catch (err) {
     header.textContent = '';
@@ -619,7 +742,7 @@ async function loadTxDetail(hash) {
     container.appendChild(el('h2', { style: { margin: '16px 0 8px' } }, 'Transaction'));
     const tbl = el('table');
     tbl.appendChild(el('tr', {}, el('td', { style: { color: 'var(--fg2)' } }, 'hash'), el('td', {}, tx.hash)));
-    tbl.appendChild(el('tr', {}, el('td', { style: { color: 'var(--fg2)' } }, 'block'), el('td', {}, blockLabel(tx.block_height))));
+    tbl.appendChild(el('tr', {}, el('td', { style: { color: 'var(--fg2)' } }, 'block'), el('td', {}, blockLink(tx.block_height))));
     tbl.appendChild(el('tr', {}, el('td', { style: { color: 'var(--fg2)' } }, 'gas'), el('td', {}, fmtNum(tx.gas_used) + ' / ' + fmtNum(tx.gas_wanted))));
     tbl.appendChild(el('tr', {}, el('td', { style: { color: 'var(--fg2)' } }, 'fee'), el('td', {}, fmtNum(tx.gas_fee?.amount || 0) + ' ' + (tx.gas_fee?.denom || ''))));
     tbl.appendChild(el('tr', {}, el('td', { style: { color: 'var(--fg2)' } }, 'memo'), el('td', {}, tx.memo || '-')));
@@ -717,6 +840,11 @@ function switchTab(name, tabEl) {
   document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
   if (tabEl) tabEl.classList.add('active');
   document.getElementById('tab-' + name).classList.add('active');
+  // Update URL with tab param without triggering navigation
+  const url = new URL(window.location);
+  if (name === 'info') url.searchParams.delete('tab');
+  else url.searchParams.set('tab', name);
+  history.replaceState(null, '', url);
 }
 
 // --- D3 Graph ---
@@ -770,6 +898,18 @@ document.getElementById('search-input').addEventListener('input', function() {
   }, 200);
 });
 document.addEventListener('click', (e) => { if (!e.target.closest('.search-box')) document.getElementById('search-results').classList.remove('open'); });
+
+// --- Address highlight on hover ---
+document.addEventListener('mouseover', (e) => {
+  const addr = e.target.closest('[data-addr]')?.getAttribute('data-addr');
+  if (!addr) return;
+  document.querySelectorAll('[data-addr="' + CSS.escape(addr) + '"]').forEach(el => el.classList.add('addr-highlight'));
+});
+document.addEventListener('mouseout', (e) => {
+  const addr = e.target.closest('[data-addr]')?.getAttribute('data-addr');
+  if (!addr) return;
+  document.querySelectorAll('[data-addr="' + CSS.escape(addr) + '"]').forEach(el => el.classList.remove('addr-highlight'));
+});
 
 // --- Routing ---
 window.addEventListener('popstate', route);

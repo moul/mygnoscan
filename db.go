@@ -244,6 +244,8 @@ func (d *DB) ListPackages(realmOnly bool, limit, offset int) ([]PackageInfo, err
 	var args []any
 	if realmOnly {
 		q += ` WHERE is_realm = 1`
+	} else {
+		q += ` WHERE is_realm = 0`
 	}
 	q += ` ORDER BY block_height DESC`
 	if limit > 0 {

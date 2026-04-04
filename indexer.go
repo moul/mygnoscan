@@ -351,24 +351,31 @@ const blockFields = `
 	proposer_address_raw
 `
 
-// GetRecentBlocks fetches recent blocks.
+// GetRecentBlocks fetches recent blocks by querying a height range from the tip.
 func (c *IndexerClient) GetRecentBlocks(ctx context.Context, limit int) ([]Block, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	// Get latest height first
+	latest, err := c.LatestBlockHeight(ctx)
+	if err != nil {
+		return nil, err
+	}
+	fromHeight := latest - limit
+	if fromHeight < 0 {
+		fromHeight = 0
+	}
+
 	var result struct {
 		GetBlocks []Block `json:"getBlocks"`
 	}
 	q := fmt.Sprintf(`{
 		getBlocks(
-			where: {}
+			where: { height: { gt: %d } }
 			order: { height: DESC }
 		) { %s }
-	}`, blockFields)
-	err := c.query(ctx, q, nil, &result)
-	if err != nil {
-		return nil, err
-	}
-	if limit > 0 && len(result.GetBlocks) > limit {
-		return result.GetBlocks[:limit], nil
-	}
+	}`, fromHeight, blockFields)
+	err = c.query(ctx, q, nil, &result)
 	return result.GetBlocks, err
 }
 
@@ -403,6 +410,21 @@ func (c *IndexerClient) GetTransactionsByRealmFunc(ctx context.Context, pkgPath,
 			order: { heightAndIndex: DESC }
 		) { %s }
 	}`, pkgPath, funcName, txFields)
+	err := c.query(ctx, q, nil, &result)
+	return result.GetTransactions, err
+}
+
+// GetRecentTransactionsWithEvents fetches recent transactions that have GnoEvents.
+func (c *IndexerClient) GetRecentTransactionsWithEvents(ctx context.Context) ([]Transaction, error) {
+	var result struct {
+		GetTransactions []Transaction `json:"getTransactions"`
+	}
+	q := fmt.Sprintf(`{
+		getTransactions(
+			where: { response: { events: { GnoEvent: {} } } }
+			order: { heightAndIndex: DESC }
+		) { %s }
+	}`, txFields)
 	err := c.query(ctx, q, nil, &result)
 	return result.GetTransactions, err
 }
