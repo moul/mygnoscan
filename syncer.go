@@ -69,7 +69,7 @@ func (s *Syncer) syncCalls(ctx context.Context) error {
 		return err
 	}
 
-	count := 0
+	callCount, sendCount := 0, 0
 	for _, tx := range txs {
 		for _, msg := range tx.Messages {
 			switch msg.Value.Typename {
@@ -84,11 +84,23 @@ func (s *Syncer) syncCalls(ctx context.Context) error {
 					log.Printf("process call: %v", err)
 					continue
 				}
-				count++
+				callCount++
+			case "BankMsgSend":
+				if err := s.db.InsertBankSend(
+					tx.Hash, tx.BlockHeight,
+					msg.Value.FromAddress,
+					msg.Value.ToAddress,
+					msg.Value.Amount,
+					tx.Success,
+				); err != nil {
+					log.Printf("process send: %v", err)
+					continue
+				}
+				sendCount++
 			}
 		}
 	}
-	log.Printf("synced %d calls", count)
+	log.Printf("synced %d calls, %d sends", callCount, sendCount)
 	return nil
 }
 

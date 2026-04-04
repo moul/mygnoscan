@@ -261,7 +261,12 @@ func (a *API) HandleBlock(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, err.Error(), 404)
 		return
 	}
-	jsonResponse(w, block)
+	// Also get transactions in this block
+	txs, _ := a.client.GetTransactionsByBlock(r.Context(), height)
+	jsonResponse(w, map[string]any{
+		"block":        block,
+		"transactions": txs,
+	})
 }
 
 func (a *API) HandleValidators(w http.ResponseWriter, r *http.Request) {

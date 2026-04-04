@@ -40,6 +40,7 @@ table { width: 100%; border-collapse: collapse; }
 th { text-align: left; font-size: 11px; color: var(--fg2); text-transform: uppercase; letter-spacing: 1px; padding: 8px 12px; border-bottom: 1px solid var(--border); }
 td { padding: 8px 12px; border-bottom: 1px solid var(--border); font-size: 13px; word-break: break-all; }
 tr:hover { background: var(--bg2); }
+tr { white-space: nowrap; }
 .truncate { max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .badge { display: inline-block; padding: 2px 8px; border-radius: 3px; font-size: 11px; font-weight: bold; }
 .badge-realm { background: rgba(78,205,196,0.15); color: var(--accent); }
@@ -52,7 +53,15 @@ tr:hover { background: var(--bg2); }
 .tab.active { color: var(--accent); border-bottom-color: var(--accent); }
 .tab-content { display: none; }
 .tab-content.active { display: block; }
-pre { background: var(--bg2); border: 1px solid var(--border); border-radius: 4px; padding: 16px; overflow-x: auto; font-size: 13px; line-height: 1.5; }
+pre { background: var(--bg2); border: 1px solid var(--border); border-radius: 4px; padding: 16px; overflow-x: auto; font-size: 13px; line-height: 1.5; white-space: pre; }
+.syn-kw { color: #c678dd; }
+.syn-str { color: #98c379; }
+.syn-cmt { color: #5c6370; font-style: italic; }
+.syn-fn { color: #61afef; }
+.syn-type { color: #e5c07b; }
+.syn-num { color: #d19a66; }
+.syn-imp { color: #98c379; cursor: pointer; text-decoration: underline; text-decoration-style: dotted; }
+.syn-imp:hover { color: var(--accent); }
 #dep-graph { background: var(--bg2); border: 1px solid var(--border); border-radius: 4px; min-height: 400px; }
 .view { display: none; }
 .view.active { display: block; }
@@ -133,13 +142,14 @@ pre { background: var(--bg2); border: 1px solid var(--border); border-radius: 4p
   <div class="view" id="view-blocks"><main><div class="section"><div class="section-title">recent blocks</div>
     <table><thead><tr><th>height</th><th>time</th><th>txs</th><th>proposer</th><th>hash</th></tr></thead><tbody id="blocks-list"></tbody></table></div></main></div>
   <div class="view" id="view-accounts"><main><div class="section"><div class="section-title">active accounts</div>
-    <table><thead><tr><th>address</th><th>calls</th><th>deploys</th><th>msg_runs</th><th>total</th></tr></thead><tbody id="accounts-list"></tbody></table></div></main></div>
+    <table><thead><tr><th>address</th><th>calls</th><th>deploys</th><th>msg_runs</th><th>sends</th><th>total</th></tr></thead><tbody id="accounts-list"></tbody></table></div></main></div>
   <div class="view" id="view-tokens"><main><div class="section"><div class="section-title">tokens (grc20)</div>
     <table><thead><tr><th>path</th><th>name</th><th>creator</th><th>calls</th></tr></thead><tbody id="tokens-list"></tbody></table></div></main></div>
   <div class="view" id="view-validators"><main><div class="section"><div class="section-title">validators</div>
     <div id="validators-content"></div></div></main></div>
   <div class="view" id="view-govdao"><main><div class="section"><div class="section-title">govdao activity</div>
     <table><thead><tr><th>block</th><th>caller</th><th>function</th><th>status</th><th>tx</th></tr></thead><tbody id="govdao-list"></tbody></table></div></main></div>
+  <div class="view" id="view-block-detail"><main><div id="block-detail-content"></div></main></div>
   <div class="view" id="view-events"><main><div class="section"><div class="section-title">recent events</div>
     <table><thead><tr><th>block</th><th>realm</th><th>type</th><th>attributes</th><th>tx</th></tr></thead><tbody id="events-list"></tbody></table></div></main></div>
   <div class="view" id="view-realm-detail"><main>
@@ -217,6 +227,70 @@ function skeletonBlock(container) {
   for (let i = 0; i < 5; i++) container.appendChild(el('div', { className: 'skeleton skeleton-line' }));
 }
 // Raw JSON collapsible
+// Syntax-highlighted code block for .gno files
+function codeBlock(body) {
+  const pre = document.createElement('pre');
+  // Tokenize line by line
+  const lines = (body || '').split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    if (i > 0) pre.appendChild(document.createTextNode('\n'));
+    highlightLine(pre, lines[i]);
+  }
+  return pre;
+}
+function highlightLine(parent, line) {
+  // Comment
+  const cmtIdx = line.indexOf('//');
+  if (cmtIdx === 0) { parent.appendChild(el('span', { className: 'syn-cmt' }, line)); return; }
+  // Import line with gno.land path
+  const impMatch = line.match(/^(\s*)"(gno\.land\/[^"]+)"(.*)$/);
+  if (impMatch) {
+    parent.appendChild(document.createTextNode(impMatch[1]));
+    const path = impMatch[2];
+    if (path.startsWith('gno.land/p/') || path.startsWith('gno.land/r/')) {
+      const a = el('span', { className: 'syn-imp', onclick: () => navigate('/realm/' + path.replace('gno.land/', '')) }, '"' + path + '"');
+      parent.appendChild(a);
+    } else {
+      parent.appendChild(el('span', { className: 'syn-str' }, '"' + path + '"'));
+    }
+    if (impMatch[3]) parent.appendChild(document.createTextNode(impMatch[3]));
+    return;
+  }
+  // Apply keyword highlighting via regex replacement
+  const kwRe = /\b(package|import|func|return|if|else|for|range|var|const|type|struct|interface|map|chan|go|defer|switch|case|default|break|continue|select|fallthrough|cross)\b/g;
+  const strRe = /"([^"\\]|\\.)*"/g;
+  const numRe = /\b(\d+)\b/g;
+  const typeRe = /\b(string|int|int64|uint|uint64|bool|byte|error|address|any)\b/g;
+  const fnRe = /\b([A-Z]\w*)\s*\(/g;
+  // Simple approach: split by strings first to avoid highlighting inside strings
+  let pos = 0, hasComment = false;
+  const parts = [];
+  // Extract strings and comments
+  const combined = [];
+  let remaining = line;
+  if (cmtIdx > 0) { remaining = line.slice(0, cmtIdx); hasComment = true; }
+  // Just do simple text + keyword coloring
+  const tokens = remaining.split(/("(?:[^"\\]|\\.)*")/);
+  for (const tok of tokens) {
+    if (tok.startsWith('"')) {
+      parent.appendChild(el('span', { className: 'syn-str' }, tok));
+    } else {
+      // Apply keyword coloring
+      let last = 0;
+      const merged = [];
+      const allRe = /\b(package|import|func|return|if|else|for|range|var|const|type|struct|interface|map|chan|go|defer|switch|case|default|break|continue|select|fallthrough|cross)\b/g;
+      let m;
+      while ((m = allRe.exec(tok)) !== null) {
+        if (m.index > last) parent.appendChild(document.createTextNode(tok.slice(last, m.index)));
+        parent.appendChild(el('span', { className: 'syn-kw' }, m[0]));
+        last = allRe.lastIndex;
+      }
+      if (last < tok.length) parent.appendChild(document.createTextNode(tok.slice(last)));
+    }
+  }
+  if (hasComment) parent.appendChild(el('span', { className: 'syn-cmt' }, line.slice(cmtIdx)));
+}
+
 const PAGE_SIZE = 50;
 function pager(container, page, total, onPage) {
   const totalPages = Math.ceil(total / PAGE_SIZE);
@@ -254,6 +328,26 @@ function txLink(hash, blockHeight) {
   span.appendChild(el('span', { className: 'block-ctx' }, ctx));
   return span;
 }
+function txDetailEl(msg) {
+  const v = msg?.value; if (!v) return el('span');
+  const s = el('span');
+  switch (v.__typename) {
+    case 'MsgAddPackage':
+      s.appendChild(link(v.package?.path || '', () => navigate('/realm/' + (v.package?.path || '').replace('gno.land/', ''))));
+      return s;
+    case 'MsgCall':
+      s.appendChild(link(v.pkg_path, () => navigate('/realm/' + v.pkg_path.replace('gno.land/', ''))));
+      s.append('::' + v.func);
+      return s;
+    case 'MsgRun':
+      s.append('run by '); s.appendChild(addrLink(v.caller));
+      return s;
+    case 'BankMsgSend':
+      s.appendChild(addrLink(v.from_address)); s.append(' > '); s.appendChild(addrLink(v.to_address));
+      return s;
+    default: return el('span', {}, v.__typename || '?');
+  }
+}
 function txDetail(msg) {
   const v = msg?.value; if (!v) return '';
   switch (v.__typename) {
@@ -271,7 +365,7 @@ function timeAgo(t) {
   if (s < 86400) return Math.floor(s/3600) + 'h ago'; return Math.floor(s/86400) + 'd ago';
 }
 function blockLabel(h) { return h === 0 ? 'genesis' : fmtNum(h); }
-function blockLink(h) { return link(blockLabel(h), () => navigate('/blocks')); }
+function blockLink(h) { return h === 0 ? el('span', {}, 'genesis') : link(blockLabel(h), () => navigate('/block/' + h)); }
 // Parse text for g1... addresses and gno.land/... paths, return a span with links
 function linkify(text) {
   const span = el('span');
@@ -312,6 +406,7 @@ function route() {
   else if (path === '/validators') { view = 'validators'; }
   else if (path === '/govdao') { view = 'govdao'; }
   else if (path === '/events') { view = 'events'; }
+  else if (path.startsWith('/block/')) { view = 'block-detail'; data = parseInt(path.slice(7)); }
   else if (path.startsWith('/realm/')) { view = 'realm-detail'; data = 'gno.land/' + path.slice(7); }
   else if (path.startsWith('/tx/')) { view = 'tx-detail'; data = decodeURIComponent(path.slice(4)); }
   else if (path.startsWith('/address/')) { view = 'address-detail'; data = path.slice(9); }
@@ -333,6 +428,7 @@ function route() {
     case 'validators': loadValidators(); break;
     case 'govdao': loadGovDAO(); break;
     case 'events': loadEvents(); break;
+    case 'block-detail': loadBlockDetail(data); break;
     case 'realm-detail': loadRealmDetail(data, urlTab); break;
     case 'tx-detail': loadTxDetail(data); break;
     case 'address-detail': loadAddressDetail(data); break;
@@ -365,7 +461,7 @@ async function loadHome() {
       txBody.appendChild(el('tr', {},
         el('td', {}, link(blockLabel(tx.block_height), () => navigate('/blocks'))),
         el('td', {}, typeBadge(msg?.value?.__typename)),
-        el('td', {}, link(txDetail(msg), () => navigate('/tx/' + encodeURIComponent(tx.hash)))),
+        el('td', {}, txDetailEl(msg)),
         el('td', {}, statusBadge(tx.success))
       ));
     }
@@ -428,7 +524,7 @@ async function loadTxs(page) {
         el('td', {}, txLink(tx.hash, tx.block_height)),
         el('td', {}, blockLink(tx.block_height)),
         el('td', {}, typeBadge(msg?.value?.__typename)),
-        el('td', {}, txDetail(msg)),
+        el('td', {}, txDetailEl(msg)),
         el('td', {}, statusBadge(tx.success))
       ));
     }
@@ -443,14 +539,53 @@ async function loadBlocks() {
     const tbody = clear('blocks-list');
     for (const b of (data || [])) {
       tbody.appendChild(el('tr', {},
-        el('td', {}, String(b.height)),
+        el('td', {}, blockLink(b.height)),
         el('td', {}, timeAgo(b.time)),
         el('td', {}, String(b.num_txs)),
         el('td', { className: 'truncate' }, addrLink(b.proposer_address_raw)),
-        el('td', {}, b.hash)
+        el('td', { className: 'truncate' }, b.hash)
       ));
     }
   } catch (err) { console.error(err); }
+}
+
+async function loadBlockDetail(height) {
+  const container = clear('block-detail-content');
+  skeletonBlock(container);
+  try {
+    const data = await api('block/' + height);
+    container.textContent = '';
+    const b = data.block;
+    container.appendChild(el('h2', { style: { margin: '16px 0 8px' } }, 'Block ' + fmtNum(b.height)));
+    const tbl = el('table');
+    for (const [l, v] of [['height', fmtNum(b.height)], ['hash', b.hash], ['chain', b.chain_id], ['time', b.time], ['txs', String(b.num_txs)], ['total txs', fmtNum(b.total_txs)]]) {
+      tbl.appendChild(el('tr', {}, el('td', { style: { color: 'var(--fg2)' } }, l), el('td', {}, v)));
+    }
+    const propRow = el('tr', {}, el('td', { style: { color: 'var(--fg2)' } }, 'proposer'));
+    propRow.appendChild(el('td', {}, addrLink(b.proposer_address_raw)));
+    tbl.appendChild(propRow);
+    container.appendChild(tbl);
+    // Transactions in this block
+    const txs = data.transactions || [];
+    if (txs.length) {
+      container.appendChild(el('div', { className: 'section-title', style: { marginTop: '24px' } }, 'transactions (' + txs.length + ')'));
+      const txTbl = el('table');
+      txTbl.appendChild(el('thead', {}, el('tr', {}, el('th', {}, 'tx'), el('th', {}, 'type'), el('th', {}, 'detail'), el('th', {}, 'status'))));
+      const txBody = el('tbody');
+      for (const tx of txs) {
+        const msg = tx.messages?.[0];
+        txBody.appendChild(el('tr', {},
+          el('td', {}, txLink(tx.hash, tx.block_height)),
+          el('td', {}, typeBadge(msg?.value?.__typename)),
+          el('td', {}, txDetailEl(msg)),
+          el('td', {}, statusBadge(tx.success))
+        ));
+      }
+      txTbl.appendChild(txBody); container.appendChild(txTbl);
+    } else {
+      container.appendChild(el('div', { style: { color: 'var(--fg2)', marginTop: '16px' } }, 'no transactions in this block'));
+    }
+  } catch (err) { container.textContent = ''; container.appendChild(el('p', { style: { color: 'var(--red)', padding: '20px' } }, 'Error: ' + err.message)); }
 }
 
 async function loadAccounts() {
@@ -459,12 +594,13 @@ async function loadAccounts() {
     const data = await api('accounts');
     const tbody = clear('accounts-list');
     for (const a of (data || [])) {
-      const total = a.call_count + a.deploy_count + a.msgrun_count;
+      const total = a.call_count + a.deploy_count + a.msgrun_count + (a.send_count || 0);
       tbody.appendChild(el('tr', {},
         el('td', {}, addrLink(a.address)),
         el('td', {}, String(a.call_count)),
         el('td', {}, String(a.deploy_count)),
         el('td', {}, String(a.msgrun_count)),
+        el('td', {}, String(a.send_count || 0)),
         el('td', {}, String(total))
       ));
     }
@@ -654,7 +790,7 @@ async function loadRealmDetail(path, initialTab) {
     for (const f of (detail.files || [])) {
       src.appendChild(el('div', { style: { marginBottom: '16px' } },
         el('div', { style: { color: 'var(--accent)', marginBottom: '4px', fontSize: '12px' } }, f.name),
-        el('pre', {}, f.body)));
+        codeBlock(f.body)));
     }
     // Calls + MsgRuns that import this realm
     const calls = clear('tab-calls'); if (activeTab === 'calls') calls.classList.add('active'); else calls.classList.remove('active');
@@ -822,7 +958,7 @@ async function loadAddressDetail(addr) {
       tbody.appendChild(el('tr', {},
         el('td', {}, txLink(tx.hash, tx.block_height)),
         el('td', {}, typeBadge(msg?.value?.__typename)),
-        el('td', {}, txDetail(msg)),
+        el('td', {}, txDetailEl(msg)),
         el('td', {}, statusBadge(tx.success))
       ));
     }
@@ -853,7 +989,7 @@ function renderMessageEl(msg, index) {
       for (const f of (v.package?.files || [])) {
         const fileEl = el('div', { style: { marginTop: '8px' } },
           el('div', { style: { color: 'var(--accent)', fontSize: '12px', marginBottom: '4px' } }, f.name));
-        if (f.body) fileEl.appendChild(el('pre', {}, f.body));
+        if (f.body) fileEl.appendChild(codeBlock(f.body));
         else fileEl.appendChild(el('span', { style: { color: 'var(--fg2)' } }, '(no source)'));
         addRow('source', fileEl);
       }

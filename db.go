@@ -23,6 +23,7 @@ func NewDB(path string) (*DB, error) {
 	// Drop old tables without unique constraints (it's just a cache, rebuilds fast)
 	db.Exec(`DROP TABLE IF EXISTS calls`)
 	db.Exec(`DROP TABLE IF EXISTS msg_runs`)
+	db.Exec(`DROP TABLE IF EXISTS bank_sends`)
 
 	if err := initSchema(db); err != nil {
 		db.Close()
@@ -80,6 +81,16 @@ func initSchema(db *sql.DB) error {
 			UNIQUE(tx_hash, caller)
 		);
 
+		CREATE TABLE IF NOT EXISTS bank_sends (
+			tx_hash TEXT NOT NULL,
+			block_height INTEGER NOT NULL,
+			from_address TEXT NOT NULL,
+			to_address TEXT NOT NULL,
+			amount TEXT NOT NULL,
+			success BOOLEAN NOT NULL,
+			UNIQUE(tx_hash, from_address, to_address)
+		);
+
 		CREATE TABLE IF NOT EXISTS sync_state (
 			key TEXT PRIMARY KEY,
 			value TEXT NOT NULL
@@ -91,6 +102,8 @@ func initSchema(db *sql.DB) error {
 		CREATE INDEX IF NOT EXISTS idx_packages_creator ON packages(creator);
 		CREATE INDEX IF NOT EXISTS idx_packages_realm ON packages(is_realm);
 		CREATE INDEX IF NOT EXISTS idx_msg_runs_caller ON msg_runs(caller);
+		CREATE INDEX IF NOT EXISTS idx_bank_from ON bank_sends(from_address);
+		CREATE INDEX IF NOT EXISTS idx_bank_to ON bank_sends(to_address);
 	`)
 	return err
 }
@@ -170,6 +183,14 @@ func (d *DB) InsertMsgRun(txHash string, blockHeight int, caller, source string,
 		INSERT OR IGNORE INTO msg_runs (tx_hash, block_height, caller, source, success)
 		VALUES (?, ?, ?, ?, ?)
 	`, txHash, blockHeight, caller, source, success)
+	return err
+}
+
+func (d *DB) InsertBankSend(txHash string, blockHeight int, from, to, amount string, success bool) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	_, err := d.db.Exec(`INSERT OR IGNORE INTO bank_sends (tx_hash, block_height, from_address, to_address, amount, success) VALUES (?, ?, ?, ?, ?, ?)`,
+		txHash, blockHeight, from, to, amount, success)
 	return err
 }
 
@@ -563,22 +584,27 @@ type AccountInfo struct {
 	CallCount   int    `json:"call_count"`
 	DeployCount int    `json:"deploy_count"`
 	MsgRunCount int    `json:"msgrun_count"`
+	SendCount   int    `json:"send_count"`
 }
 
 func (d *DB) GetActiveAccounts() ([]AccountInfo, error) {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 	rows, err := d.db.Query(`
-		SELECT address, SUM(call_count), SUM(deploy_count), SUM(run_count)
+		SELECT address, SUM(call_count), SUM(deploy_count), SUM(run_count), SUM(send_count)
 		FROM (
-			SELECT caller as address, COUNT(*) as call_count, 0 as deploy_count, 0 as run_count FROM calls GROUP BY caller
+			SELECT caller as address, COUNT(*) as call_count, 0 as deploy_count, 0 as run_count, 0 as send_count FROM calls GROUP BY caller
 			UNION ALL
-			SELECT creator as address, 0, COUNT(*), 0 FROM packages GROUP BY creator
+			SELECT creator as address, 0, COUNT(*), 0, 0 FROM packages GROUP BY creator
 			UNION ALL
-			SELECT caller as address, 0, 0, COUNT(*) FROM msg_runs GROUP BY caller
+			SELECT caller as address, 0, 0, COUNT(*), 0 FROM msg_runs GROUP BY caller
+			UNION ALL
+			SELECT from_address as address, 0, 0, 0, COUNT(*) FROM bank_sends GROUP BY from_address
+			UNION ALL
+			SELECT to_address as address, 0, 0, 0, COUNT(*) FROM bank_sends GROUP BY to_address
 		)
 		GROUP BY address
-		ORDER BY (SUM(call_count) + SUM(deploy_count) + SUM(run_count)) DESC
+		ORDER BY (SUM(call_count) + SUM(deploy_count) + SUM(run_count) + SUM(send_count)) DESC
 		LIMIT 100
 	`)
 	if err != nil {
@@ -588,7 +614,7 @@ func (d *DB) GetActiveAccounts() ([]AccountInfo, error) {
 	var accounts []AccountInfo
 	for rows.Next() {
 		var a AccountInfo
-		if err := rows.Scan(&a.Address, &a.CallCount, &a.DeployCount, &a.MsgRunCount); err != nil {
+		if err := rows.Scan(&a.Address, &a.CallCount, &a.DeployCount, &a.MsgRunCount, &a.SendCount); err != nil {
 			return nil, err
 		}
 		accounts = append(accounts, a)

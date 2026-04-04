@@ -475,6 +475,21 @@ func (c *IndexerClient) GetTransactionsByRealmFunc(ctx context.Context, pkgPath,
 	return result.GetTransactions, err
 }
 
+// GetTransactionsByBlock fetches transactions in a specific block.
+func (c *IndexerClient) GetTransactionsByBlock(ctx context.Context, height int) ([]Transaction, error) {
+	var result struct {
+		GetTransactions []Transaction `json:"getTransactions"`
+	}
+	q := fmt.Sprintf(`{
+		getTransactions(
+			where: { block_height: { eq: %d } }
+			order: { heightAndIndex: ASC }
+		) { %s }
+	}`, height, txFieldsLight)
+	err := c.query(ctx, q, nil, &result)
+	return result.GetTransactions, err
+}
+
 // GetRecentTransactionsWithEvents fetches recent transactions that have GnoEvents.
 func (c *IndexerClient) GetRecentTransactionsWithEvents(ctx context.Context) ([]Transaction, error) {
 	var result struct {
