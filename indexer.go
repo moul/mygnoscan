@@ -154,10 +154,13 @@ type TxResponse struct {
 }
 
 type TxEvent struct {
-	Typename string          `json:"__typename"`
-	Type     string          `json:"type,omitempty"`
-	PkgPath  string          `json:"pkg_path,omitempty"`
-	Attrs    []EventAttr     `json:"attrs,omitempty"`
+	Typename   string      `json:"__typename"`
+	Type       string      `json:"type,omitempty"`
+	PkgPath    string      `json:"pkg_path,omitempty"`
+	Attrs      []EventAttr `json:"attrs,omitempty"`
+	BytesDelta int         `json:"bytes_delta,omitempty"`
+	FeeDelta   *Coin       `json:"fee_delta,omitempty"`
+	FeeRefund  *Coin       `json:"fee_refund,omitempty"`
 }
 
 type EventAttr struct {
@@ -480,6 +483,62 @@ func (c *IndexerClient) GetTransactionsByBlock(ctx context.Context, height int) 
 			order: { heightAndIndex: ASC }
 		) { %s }
 	}`, height, txFieldsLight)
+	err := c.query(ctx, q, nil, &result)
+	return result.GetTransactions, err
+}
+
+// GetStorageEvents fetches storage deposit/unlock events for a package.
+func (c *IndexerClient) GetStorageEvents(ctx context.Context, pkgPath string) ([]Transaction, error) {
+	var result struct {
+		GetTransactions []Transaction `json:"getTransactions"`
+	}
+	q := fmt.Sprintf(`{
+		getTransactions(
+			where: {
+				response: {
+					events: {
+						_or: [
+							{ StorageDepositEvent: { pkg_path: { eq: "%s" } } }
+							{ StorageUnlockEvent: { pkg_path: { eq: "%s" } } }
+						]
+					}
+				}
+			}
+			order: { heightAndIndex: DESC }
+		) {
+			hash block_height gas_used gas_wanted gas_fee { amount denom } success
+			response {
+				events {
+					__typename
+					... on StorageDepositEvent { type bytes_delta fee_delta { amount denom } pkg_path }
+					... on StorageUnlockEvent { type bytes_delta fee_refund { amount denom } pkg_path }
+				}
+			}
+		}
+	}`, pkgPath, pkgPath)
+	err := c.query(ctx, q, nil, &result)
+	return result.GetTransactions, err
+}
+
+// GetGasUsageForRealm fetches all txs interacting with a realm for gas stats.
+func (c *IndexerClient) GetGasUsageForRealm(ctx context.Context, pkgPath string) ([]Transaction, error) {
+	var result struct {
+		GetTransactions []Transaction `json:"getTransactions"`
+	}
+	q := fmt.Sprintf(`{
+		getTransactions(
+			where: {
+				_or: [
+					{ messages: { value: { MsgCall: { pkg_path: { eq: "%s" } } } } }
+					{ messages: { value: { MsgAddPackage: { package: { path: { eq: "%s" } } } } } }
+				]
+			}
+			order: { heightAndIndex: DESC }
+		) {
+			hash block_height gas_used gas_wanted gas_fee { amount denom } success
+			messages { value { __typename ... on MsgCall { func } } }
+		}
+	}`, pkgPath, pkgPath)
 	err := c.query(ctx, q, nil, &result)
 	return result.GetTransactions, err
 }

@@ -349,6 +349,103 @@ func (a *API) HandleDeps(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, graph)
 }
 
+func (a *API) HandleStorage(w http.ResponseWriter, r *http.Request) {
+	path := "gno.land/" + r.PathValue("path")
+	path = strings.TrimRight(path, "/")
+
+	storageTxs, _ := a.client.GetStorageEvents(r.Context(), path)
+	gasTxs, _ := a.client.GetGasUsageForRealm(r.Context(), path)
+
+	// Aggregate storage
+	var totalBytesDeposit, totalBytesUnlock int
+	var totalFeeDeposit, totalFeeRefund int
+	type StorageEntry struct {
+		TxHash      string `json:"tx_hash"`
+		BlockHeight int    `json:"block_height"`
+		Type        string `json:"type"`
+		BytesDelta  int    `json:"bytes_delta"`
+		FeeAmount   int    `json:"fee_amount"`
+		FeeDenom    string `json:"fee_denom"`
+	}
+	var entries []StorageEntry
+	for _, tx := range storageTxs {
+		if tx.Response == nil {
+			continue
+		}
+		for _, ev := range tx.Response.Events {
+			if ev.Typename == "StorageDepositEvent" && ev.PkgPath == path {
+				totalBytesDeposit += ev.BytesDelta
+				fee := 0
+				denom := ""
+				if ev.FeeDelta != nil {
+					fee = ev.FeeDelta.Amount
+					denom = ev.FeeDelta.Denom
+					totalFeeDeposit += fee
+				}
+				entries = append(entries, StorageEntry{tx.Hash, tx.BlockHeight, "deposit", ev.BytesDelta, fee, denom})
+			} else if ev.Typename == "StorageUnlockEvent" && ev.PkgPath == path {
+				totalBytesUnlock += ev.BytesDelta
+				fee := 0
+				denom := ""
+				if ev.FeeRefund != nil {
+					fee = ev.FeeRefund.Amount
+					denom = ev.FeeRefund.Denom
+					totalFeeRefund += fee
+				}
+				entries = append(entries, StorageEntry{tx.Hash, tx.BlockHeight, "unlock", ev.BytesDelta, fee, denom})
+			}
+		}
+	}
+
+	// Aggregate gas
+	var totalGasUsed, totalGasWanted, totalGasFee int
+	type GasEntry struct {
+		TxHash      string `json:"tx_hash"`
+		BlockHeight int    `json:"block_height"`
+		GasUsed     int    `json:"gas_used"`
+		GasWanted   int    `json:"gas_wanted"`
+		GasFee      int    `json:"gas_fee"`
+		Func        string `json:"func"`
+		Success     bool   `json:"success"`
+	}
+	var gasEntries []GasEntry
+	for _, tx := range gasTxs {
+		totalGasUsed += tx.GasUsed
+		totalGasWanted += tx.GasWanted
+		fee := 0
+		if tx.GasFee != nil {
+			fee = tx.GasFee.Amount
+			totalGasFee += fee
+		}
+		fn := ""
+		if len(tx.Messages) > 0 {
+			fn = tx.Messages[0].Value.Func
+			if fn == "" {
+				fn = tx.Messages[0].Value.Typename
+			}
+		}
+		gasEntries = append(gasEntries, GasEntry{tx.Hash, tx.BlockHeight, tx.GasUsed, tx.GasWanted, fee, fn, tx.Success})
+	}
+
+	jsonResponse(w, map[string]any{
+		"storage": map[string]any{
+			"total_bytes_deposited": totalBytesDeposit,
+			"total_bytes_unlocked":  totalBytesUnlock,
+			"net_bytes":             totalBytesDeposit - totalBytesUnlock,
+			"total_fee_deposited":   totalFeeDeposit,
+			"total_fee_refunded":    totalFeeRefund,
+			"entries":               entries,
+		},
+		"gas": map[string]any{
+			"total_gas_used":   totalGasUsed,
+			"total_gas_wanted": totalGasWanted,
+			"total_gas_fee":    totalGasFee,
+			"tx_count":         len(gasEntries),
+			"entries":          gasEntries,
+		},
+	})
+}
+
 // fetchBalance queries the gno.land RPC for bank balance.
 func fetchBalance(ctx context.Context, addr string) string {
 	rpcURL := fmt.Sprintf("https://rpc.gno.land/abci_query?path=%%22bank/balances/%s%%22&data=0x", addr)

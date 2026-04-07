@@ -187,6 +187,7 @@ footer a:hover { color: var(--accent); }
     <div class="tab-content" id="tab-source"></div>
     <div class="tab-content" id="tab-calls"></div>
     <div class="tab-content" id="tab-events"></div>
+    <div class="tab-content" id="tab-storage"></div>
     <div class="tab-content" id="tab-deps"></div>
     <div class="tab-content" id="tab-graph"><div id="dep-graph"></div></div>
   </main></div>
@@ -1074,7 +1075,7 @@ async function loadRealmDetail(path, initialTab) {
     meta.append(' at ' + blockLabel(detail.block_height) + ' \u00b7 ' + detail.num_files + ' files \u00b7 ' + detail.call_count + ' calls');
     header.appendChild(meta);
     const tabs = clear('realm-tabs');
-    const tabNames = ['info', 'source', 'calls', 'events', 'deps', 'graph'];
+    const tabNames = ['info', 'source', 'calls', 'events', 'storage', 'deps', 'graph'];
     const activeTab = initialTab && tabNames.includes(initialTab) ? initialTab : 'info';
     tabNames.forEach((name) => {
       const tab = el('div', { className: 'tab' + (name === activeTab ? ' active' : ''), onclick: () => switchTab(name, tab) }, name);
@@ -1173,6 +1174,67 @@ async function loadRealmDetail(path, initialTab) {
         }
         evTbl.appendChild(evBody); eventsEl.appendChild(evTbl);
       } catch (err) { eventsEl.textContent = ''; eventsEl.appendChild(el('div', { style: { color: 'var(--red)' } }, 'Error loading events: ' + err.message)); }
+    })();
+    // Storage tab (loaded from indexer)
+    const storageEl = clear('tab-storage'); if (activeTab === 'storage') storageEl.classList.add('active'); else storageEl.classList.remove('active');
+    skeletonBlock(storageEl);
+    (async () => {
+      try {
+        const storagePath = path.replace('gno.land/', '');
+        const sData = await api('storage/' + storagePath);
+        storageEl.textContent = '';
+        const st = sData.storage || {};
+        const gs = sData.gas || {};
+        // Stats bar
+        const sStats = el('div', { className: 'stats-bar' });
+        sStats.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'net storage'), el('span', { className: 'value' }, fmtNum(st.net_bytes || 0) + ' bytes')));
+        sStats.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'deposited'), el('span', { className: 'value' }, fmtNum(st.total_bytes_deposited || 0) + ' bytes')));
+        sStats.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'deposit fee'), el('span', { className: 'value' }, fmtNum(st.total_fee_deposited || 0) + ' ugnot')));
+        sStats.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'total gas used'), el('span', { className: 'value' }, fmtNum(gs.total_gas_used || 0))));
+        sStats.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'total gas fee'), el('span', { className: 'value' }, fmtNum(gs.total_gas_fee || 0) + ' ugnot')));
+        sStats.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'txs'), el('span', { className: 'value' }, fmtNum(gs.tx_count || 0))));
+        storageEl.appendChild(sStats);
+        // Storage events table
+        if ((st.entries || []).length) {
+          storageEl.appendChild(el('div', { className: 'section-title', style: { marginTop: '16px' } }, 'storage events'));
+          const stTbl = el('table');
+          stTbl.appendChild(el('thead', {}, el('tr', {}, el('th', {}, 'block'), el('th', {}, 'type'), el('th', {}, 'bytes'), el('th', {}, 'fee'), el('th', {}, 'tx'))));
+          const stBody = el('tbody');
+          for (const e of st.entries) {
+            stBody.appendChild(el('tr', {},
+              el('td', {}, blockLink(e.block_height)),
+              el('td', {}, badge(e.type === 'deposit' ? 'pkg' : 'ok', e.type)),
+              el('td', {}, fmtNum(e.bytes_delta)),
+              el('td', {}, fmtNum(e.fee_amount) + ' ' + (e.fee_denom || '')),
+              el('td', {}, txLink(e.tx_hash, e.block_height))
+            ));
+          }
+          stTbl.appendChild(stBody); storageEl.appendChild(stTbl);
+        }
+        // Gas usage table
+        if ((gs.entries || []).length) {
+          storageEl.appendChild(el('div', { className: 'section-title', style: { marginTop: '24px' } }, 'gas usage per transaction'));
+          const gsTbl = el('table');
+          gsTbl.appendChild(el('thead', {}, el('tr', {}, el('th', {}, 'block'), el('th', {}, 'function'), el('th', {}, 'gas used'), el('th', {}, 'gas wanted'), el('th', {}, 'fee'), el('th', {}, 'status'), el('th', {}, 'tx'))));
+          const gsBody = el('tbody');
+          for (const e of gs.entries) {
+            const pct = e.gas_wanted > 0 ? (e.gas_used / e.gas_wanted * 100).toFixed(0) + '%' : '-';
+            gsBody.appendChild(el('tr', {},
+              el('td', {}, blockLink(e.block_height)),
+              el('td', {}, e.func || '-'),
+              el('td', {}, fmtNum(e.gas_used) + ' (' + pct + ')'),
+              el('td', {}, fmtNum(e.gas_wanted)),
+              el('td', {}, fmtNum(e.gas_fee) + ' ugnot'),
+              el('td', {}, statusBadge(e.success)),
+              el('td', {}, txLink(e.tx_hash, e.block_height))
+            ));
+          }
+          gsTbl.appendChild(gsBody); storageEl.appendChild(gsTbl);
+        }
+        if (!(st.entries || []).length && !(gs.entries || []).length) {
+          storageEl.appendChild(el('div', { style: { color: 'var(--fg2)', padding: '12px 0' } }, 'no storage or gas data for this realm'));
+        }
+      } catch (err) { storageEl.textContent = ''; storageEl.appendChild(el('div', { style: { color: 'var(--red)' } }, 'Error: ' + err.message)); }
     })();
     // Deps
     const depsEl = clear('tab-deps'); if (activeTab === 'deps') depsEl.classList.add('active'); else depsEl.classList.remove('active');
