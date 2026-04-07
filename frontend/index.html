@@ -1383,10 +1383,47 @@ async function loadTxDetail(hash) {
     const tx = await api('tx/' + encodeURIComponent(hash));
     container.textContent = '';
     container.appendChild(el('h2', { style: { margin: '16px 0 8px' } }, 'Transaction'));
+    // Compute stats from events
+    const events = tx.response?.events || [];
+    let storageBytes = 0, storageFee = 0, storageCount = 0;
+    let unlockBytes = 0, unlockFee = 0, unlockCount = 0;
+    let gnoEventCount = 0;
+    const storagePaths = new Set();
+    for (const ev of events) {
+      if (ev.__typename === 'StorageDepositEvent') {
+        storageCount++; storageBytes += ev.bytes_delta || 0;
+        if (ev.fee_delta) storageFee += ev.fee_delta.amount;
+        if (ev.pkg_path) storagePaths.add(ev.pkg_path);
+      } else if (ev.__typename === 'StorageUnlockEvent') {
+        unlockCount++; unlockBytes += ev.bytes_delta || 0;
+        if (ev.fee_refund) unlockFee += ev.fee_refund.amount;
+      } else if (ev.__typename === 'GnoEvent') {
+        gnoEventCount++;
+      }
+    }
+    const gasEff = tx.gas_wanted > 0 ? (tx.gas_used / tx.gas_wanted * 100).toFixed(1) : '0';
+    // Stats bar
+    const txStats = el('div', { className: 'stats-bar' });
+    txStats.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'gas used'), el('span', { className: 'value' }, fmtNum(tx.gas_used))));
+    txStats.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'efficiency'), el('span', { className: 'value' }, gasEff + '%')));
+    txStats.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'gas fee'), el('span', { className: 'value' }, fmtNum(tx.gas_fee?.amount || 0) + ' ugnot')));
+    if (storageCount > 0) {
+      txStats.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'storage'), el('span', { className: 'value' }, fmtNum(storageBytes) + ' bytes')));
+      txStats.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'storage fee'), el('span', { className: 'value' }, fmtNum(storageFee) + ' ugnot')));
+      txStats.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'realms touched'), el('span', { className: 'value' }, fmtNum(storagePaths.size))));
+    }
+    if (unlockCount > 0) {
+      txStats.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'unlocked'), el('span', { className: 'value' }, fmtNum(unlockBytes) + ' bytes')));
+      txStats.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'refunded'), el('span', { className: 'value' }, fmtNum(unlockFee) + ' ugnot')));
+    }
+    txStats.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'events'), el('span', { className: 'value' }, fmtNum(events.length))));
+    container.appendChild(txStats);
+    // Info table
     const tbl = el('table');
     tbl.appendChild(el('tr', {}, el('td', { style: { color: 'var(--fg2)' } }, 'hash'), el('td', {}, tx.hash)));
-    tbl.appendChild(el('tr', {}, el('td', { style: { color: 'var(--fg2)' } }, 'block'), el('td', {}, blockLink(tx.block_height))));
-    tbl.appendChild(el('tr', {}, el('td', { style: { color: 'var(--fg2)' } }, 'gas'), el('td', {}, fmtNum(tx.gas_used) + ' / ' + fmtNum(tx.gas_wanted))));
+    const blockTd = el('td'); blockTd.appendChild(blockLink(tx.block_height));
+    tbl.appendChild(el('tr', {}, el('td', { style: { color: 'var(--fg2)' } }, 'block'), blockTd));
+    tbl.appendChild(el('tr', {}, el('td', { style: { color: 'var(--fg2)' } }, 'gas'), el('td', {}, fmtNum(tx.gas_used) + ' / ' + fmtNum(tx.gas_wanted) + ' (' + gasEff + '%)')));
     tbl.appendChild(el('tr', {}, el('td', { style: { color: 'var(--fg2)' } }, 'fee'), el('td', {}, fmtNum(tx.gas_fee?.amount || 0) + ' ' + (tx.gas_fee?.denom || ''))));
     tbl.appendChild(el('tr', {}, el('td', { style: { color: 'var(--fg2)' } }, 'memo'), el('td', {}, tx.memo || '-')));
     const sr = el('tr', {}, el('td', { style: { color: 'var(--fg2)' } }, 'status'));
