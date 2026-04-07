@@ -62,7 +62,8 @@ pre { background: var(--bg2); border: 1px solid var(--border); border-radius: 4p
 .syn-num { color: #d19a66; }
 .syn-imp { color: #98c379; cursor: pointer; text-decoration: underline; text-decoration-style: dotted; }
 .syn-imp:hover { color: var(--accent); }
-#dep-graph { background: var(--bg2); border: 1px solid var(--border); border-radius: 4px; min-height: 400px; }
+#dep-graph { background: var(--bg2); border: 1px solid var(--border); border-radius: 4px; min-height: 600px; position: relative; overflow: hidden; }
+#dep-graph svg { display: block; }
 .view { display: none; }
 .view.active { display: block; }
 .card { background: var(--bg2); border: 1px solid var(--border); border-radius: 4px; padding: 12px; margin-bottom: 8px; }
@@ -1039,28 +1040,159 @@ function switchTab(name, tabEl) {
 }
 
 // --- D3 Graph ---
+// Depth colors: 0=center, 1=direct, 2=2nd degree, etc
+const DEPTH_COLORS = ['#4ecdc4', '#61afef', '#c678dd', '#e5c07b', '#d19a66', '#ff6b6b', '#888'];
+function depthColor(d) { return DEPTH_COLORS[Math.min(d, DEPTH_COLORS.length - 1)]; }
+
 function renderDepGraph(imports, dependents, centerPath) {
   const container = document.getElementById('dep-graph'); container.textContent = '';
   const nodes = new Map(); const links = [];
-  nodes.set(centerPath, { id: centerPath, group: 'center' });
+
+  // Build graph
+  nodes.set(centerPath, { id: centerPath, group: 'center', depth: 0 });
   for (const [pkg, deps] of Object.entries(imports || {})) {
-    if (!nodes.has(pkg)) nodes.set(pkg, { id: pkg, group: 'import' });
-    for (const dep of deps || []) { if (!nodes.has(dep)) nodes.set(dep, { id: dep, group: 'import' }); links.push({ source: pkg, target: dep, type: 'imports' }); }
+    if (!nodes.has(pkg)) nodes.set(pkg, { id: pkg, group: 'import', depth: 999 });
+    for (const dep of deps || []) {
+      if (!nodes.has(dep)) nodes.set(dep, { id: dep, group: 'import', depth: 999 });
+      links.push({ source: pkg, target: dep, type: 'imports' });
+    }
   }
   for (const [pkg, deps] of Object.entries(dependents || {})) {
-    if (!nodes.has(pkg)) nodes.set(pkg, { id: pkg, group: 'dependent' });
-    for (const dep of deps || []) { if (!nodes.has(dep)) nodes.set(dep, { id: dep, group: 'dependent' }); links.push({ source: pkg, target: dep, type: 'dependent' }); }
+    if (!nodes.has(pkg)) nodes.set(pkg, { id: pkg, group: 'dependent', depth: 999 });
+    for (const dep of deps || []) {
+      if (!nodes.has(dep)) nodes.set(dep, { id: dep, group: 'dependent', depth: 999 });
+      links.push({ source: pkg, target: dep, type: 'dependent' });
+    }
   }
+
+  // BFS to compute depth from center
+  const adj = new Map();
+  for (const l of links) {
+    const s = typeof l.source === 'string' ? l.source : l.source.id;
+    const t = typeof l.target === 'string' ? l.target : l.target.id;
+    if (!adj.has(s)) adj.set(s, []);
+    if (!adj.has(t)) adj.set(t, []);
+    adj.get(s).push(t);
+    adj.get(t).push(s);
+  }
+  const visited = new Set([centerPath]);
+  let queue = [centerPath], depth = 0;
+  while (queue.length) {
+    const next = [];
+    for (const id of queue) {
+      const n = nodes.get(id);
+      if (n && n.depth > depth) n.depth = depth;
+      for (const nb of (adj.get(id) || [])) {
+        if (!visited.has(nb)) { visited.add(nb); next.push(nb); }
+      }
+    }
+    depth++;
+    queue = next;
+  }
+
+  // Assign depth to links (max depth of endpoints)
+  for (const l of links) {
+    const sId = typeof l.source === 'string' ? l.source : l.source.id;
+    const tId = typeof l.target === 'string' ? l.target : l.target.id;
+    const sn = nodes.get(sId), tn = nodes.get(tId);
+    l.depth = Math.max(sn ? sn.depth : 0, tn ? tn.depth : 0);
+  }
+
+  const maxDepth = Math.max(...Array.from(nodes.values()).map(n => n.depth === 999 ? 0 : n.depth));
   const nodeArr = Array.from(nodes.values());
-  if (nodeArr.length <= 1) { container.appendChild(el('div', { style: { padding: '40px', textAlign: 'center', color: 'var(--fg2)' } }, 'no dependencies to visualize')); return; }
-  const width = container.clientWidth || 800, height = 400;
+  // Detect p/ vs r/
+  nodeArr.forEach(n => { n.isRealm = n.id.includes('/r/'); });
+
+  if (nodeArr.length <= 1) {
+    container.appendChild(el('div', { style: { padding: '40px', textAlign: 'center', color: 'var(--fg2)' } }, 'no dependencies to visualize'));
+    return;
+  }
+
+  const width = container.clientWidth || 800;
+  const height = Math.max(600, window.innerHeight - 300);
+  container.style.minHeight = height + 'px';
+
+  // Legend
+  const legend = el('div', { style: { display: 'flex', gap: '16px', flexWrap: 'wrap', padding: '8px 12px', fontSize: '12px', color: 'var(--fg2)', alignItems: 'center' } });
+  for (let i = 0; i <= Math.min(maxDepth, DEPTH_COLORS.length - 1); i++) {
+    const dot = el('span', { style: { display: 'inline-block', width: '10px', height: '10px', borderRadius: '50%', background: depthColor(i), marginRight: '4px' } });
+    legend.appendChild(el('span', { style: { display: 'inline-flex', alignItems: 'center', gap: '2px' } }, dot, i === 0 ? 'center' : 'depth ' + i));
+  }
+  // Shape legend
+  legend.appendChild(el('span', { style: { marginLeft: '12px', borderLeft: '1px solid var(--border)', paddingLeft: '12px' } }));
+  const circSvg = '<svg width="12" height="12"><circle cx="6" cy="6" r="5" fill="none" stroke="#ccc" stroke-width="1.5"/></svg>';
+  const diamSvg = '<svg width="12" height="12"><polygon points="6,1 11,6 6,11 1,6" fill="none" stroke="#ccc" stroke-width="1.5"/></svg>';
+  const circEl = el('span'); circEl.insertAdjacentHTML('beforeend', circSvg);
+  const diamEl = el('span'); diamEl.insertAdjacentHTML('beforeend', diamSvg);
+  legend.appendChild(el('span', { style: { display: 'inline-flex', alignItems: 'center', gap: '4px' } }, circEl, 'package (p/)'));
+  legend.appendChild(el('span', { style: { display: 'inline-flex', alignItems: 'center', gap: '4px' } }, diamEl, 'realm (r/)'));
+  container.appendChild(legend);
+
   const svg = d3.select(container).append('svg').attr('width', width).attr('height', height);
-  svg.append('defs').append('marker').attr('id', 'arrow').attr('viewBox', '0 -5 10 10').attr('refX', 20).attr('refY', 0).attr('markerWidth', 6).attr('markerHeight', 6).attr('orient', 'auto').append('path').attr('d', 'M0,-5L10,0L0,5').attr('fill', '#555');
-  const sim = d3.forceSimulation(nodeArr).force('link', d3.forceLink(links).id(d => d.id).distance(120)).force('charge', d3.forceManyBody().strength(-300)).force('center', d3.forceCenter(width/2, height/2)).force('collision', d3.forceCollide().radius(30));
-  const linkEl = svg.append('g').selectAll('line').data(links).join('line').attr('stroke', d => d.type === 'imports' ? '#4ecdc4' : '#ff6b6b').attr('stroke-opacity', 0.6).attr('stroke-width', 1.5).attr('marker-end', 'url(#arrow)');
-  const nodeEl = svg.append('g').selectAll('circle').data(nodeArr).join('circle').attr('r', d => d.group === 'center' ? 10 : 6).attr('fill', d => d.group === 'center' ? '#4ecdc4' : d.group === 'import' ? '#51cf66' : '#ff6b6b').attr('stroke', '#000').attr('stroke-width', 1).style('cursor', 'pointer').on('click', (e, d) => navigate('/realm/' + d.id.replace('gno.land/', ''))).call(d3.drag().on('start', (e, d) => { if (!e.active) sim.alphaTarget(0.3).restart(); d.fx = d.x; d.fy = d.y; }).on('drag', (e, d) => { d.fx = e.x; d.fy = e.y; }).on('end', (e, d) => { if (!e.active) sim.alphaTarget(0); d.fx = null; d.fy = null; }));
-  const labelEl = svg.append('g').selectAll('text').data(nodeArr).join('text').text(d => d.id.split('/').slice(-2).join('/')).attr('font-size', 10).attr('fill', '#ccc').attr('dx', 12).attr('dy', 4);
-  sim.on('tick', () => { linkEl.attr('x1', d => d.source.x).attr('y1', d => d.source.y).attr('x2', d => d.target.x).attr('y2', d => d.target.y); nodeEl.attr('cx', d => d.x).attr('cy', d => d.y); labelEl.attr('x', d => d.x).attr('y', d => d.y); });
+
+  // Zoom/pan
+  const zoomG = svg.append('g');
+  const zoom = d3.zoom().scaleExtent([0.2, 5]).on('zoom', (e) => zoomG.attr('transform', e.transform));
+  svg.call(zoom);
+  // Zoom controls
+  const controls = el('div', { style: { position: 'absolute', top: '40px', right: '12px', display: 'flex', flexDirection: 'column', gap: '4px' } });
+  const zoomIn = el('button', { className: 'pager-btn', style: { padding: '4px 8px', fontSize: '14px' }, onclick: () => svg.transition().duration(300).call(zoom.scaleBy, 1.5) }, '+');
+  const zoomOut = el('button', { className: 'pager-btn', style: { padding: '4px 8px', fontSize: '14px' }, onclick: () => svg.transition().duration(300).call(zoom.scaleBy, 0.67) }, '\u2013');
+  const zoomReset = el('button', { className: 'pager-btn', style: { padding: '4px 8px', fontSize: '11px' }, onclick: () => svg.transition().duration(300).call(zoom.transform, d3.zoomIdentity) }, 'fit');
+  controls.appendChild(zoomIn); controls.appendChild(zoomOut); controls.appendChild(zoomReset);
+  container.appendChild(controls);
+
+  // Arrow markers per depth
+  const defs = svg.append('defs');
+  for (let i = 0; i <= maxDepth + 1; i++) {
+    defs.append('marker').attr('id', 'arrow-d' + i).attr('viewBox', '0 -5 10 10')
+      .attr('refX', 20).attr('refY', 0).attr('markerWidth', 6).attr('markerHeight', 6).attr('orient', 'auto')
+      .append('path').attr('d', 'M0,-5L10,0L0,5').attr('fill', depthColor(i));
+  }
+
+  const sim = d3.forceSimulation(nodeArr)
+    .force('link', d3.forceLink(links).id(d => d.id).distance(100))
+    .force('charge', d3.forceManyBody().strength(-250))
+    .force('center', d3.forceCenter(width / 2, height / 2))
+    .force('collision', d3.forceCollide().radius(35));
+
+  const linkEl = zoomG.append('g').selectAll('line').data(links).join('line')
+    .attr('stroke', d => depthColor(d.depth))
+    .attr('stroke-opacity', 0.7)
+    .attr('stroke-width', 1.5)
+    .attr('marker-end', d => 'url(#arrow-d' + d.depth + ')');
+
+  // Nodes: circle for p/, diamond for r/
+  const nodeG = zoomG.append('g').selectAll('g').data(nodeArr).join('g')
+    .style('cursor', 'pointer')
+    .on('click', (e, d) => navigate('/realm/' + d.id.replace('gno.land/', '')))
+    .call(d3.drag()
+      .on('start', (e, d) => { if (!e.active) sim.alphaTarget(0.3).restart(); d.fx = d.x; d.fy = d.y; })
+      .on('drag', (e, d) => { d.fx = e.x; d.fy = e.y; })
+      .on('end', (e, d) => { if (!e.active) sim.alphaTarget(0); d.fx = null; d.fy = null; }));
+
+  // Circle for packages
+  nodeG.filter(d => !d.isRealm).append('circle')
+    .attr('r', d => d.depth === 0 ? 12 : 7)
+    .attr('fill', d => depthColor(d.depth))
+    .attr('stroke', '#000').attr('stroke-width', 1);
+
+  // Diamond for realms
+  nodeG.filter(d => d.isRealm).append('polygon')
+    .attr('points', d => { const s = d.depth === 0 ? 14 : 9; return `0,${-s} ${s},0 0,${s} ${-s},0`; })
+    .attr('fill', d => depthColor(d.depth))
+    .attr('stroke', '#000').attr('stroke-width', 1);
+
+  const labelEl = zoomG.append('g').selectAll('text').data(nodeArr).join('text')
+    .text(d => d.id.split('/').slice(-2).join('/'))
+    .attr('font-size', 10).attr('fill', '#ccc').attr('dx', 14).attr('dy', 4);
+
+  sim.on('tick', () => {
+    linkEl.attr('x1', d => d.source.x).attr('y1', d => d.source.y)
+      .attr('x2', d => d.target.x).attr('y2', d => d.target.y);
+    nodeG.attr('transform', d => 'translate(' + d.x + ',' + d.y + ')');
+    labelEl.attr('x', d => d.x).attr('y', d => d.y);
+  });
 }
 
 // --- Search ---
