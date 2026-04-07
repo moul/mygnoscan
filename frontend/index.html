@@ -118,6 +118,7 @@ footer a:hover { color: var(--accent); }
       <a onclick="navigate('/tokens')" id="nav-tokens">tokens</a>
       <a onclick="navigate('/validators')" id="nav-validators">validators</a>
       <a onclick="navigate('/govdao')" id="nav-govdao">govdao</a>
+      <a onclick="navigate('/gas')" id="nav-gas">gas</a>
       <a onclick="navigate('/events')" id="nav-events">events</a>
     </nav>
     <div class="search-box">
@@ -173,6 +174,7 @@ footer a:hover { color: var(--accent); }
     <div id="validators-content"></div></div></main></div>
   <div class="view" id="view-govdao"><main><div id="govdao-stats" class="stats-bar" style="display:none"></div><div class="section"><div class="section-title">govdao activity</div>
     <table><thead><tr><th>block</th><th>caller</th><th>function</th><th>status</th><th>tx</th></tr></thead><tbody id="govdao-list"></tbody></table></div></main></div>
+  <div class="view" id="view-gas"><main><div id="gas-content"></div></main></div>
   <div class="view" id="view-block-detail"><main><div id="block-detail-content"></div></main></div>
   <div class="view" id="view-events"><main>
     <div id="events-stats" class="stats-bar" style="display:none"></div>
@@ -480,6 +482,7 @@ function route() {
   else if (path === '/validators') { view = 'validators'; }
   else if (path === '/govdao') { view = 'govdao'; }
   else if (path === '/events') { view = 'events'; }
+  else if (path === '/gas') { view = 'gas'; }
   else if (path.startsWith('/block/')) { view = 'block-detail'; data = parseInt(path.slice(7)); }
   else if (path.startsWith('/realm/')) { view = 'realm-detail'; data = 'gno.land/' + path.slice(7); }
   else if (path.startsWith('/tx/')) { view = 'tx-detail'; data = decodeURIComponent(path.slice(4)); }
@@ -502,6 +505,7 @@ function route() {
     case 'validators': loadValidators(); break;
     case 'govdao': loadGovDAO(); break;
     case 'events': loadEvents(); break;
+    case 'gas': loadGas(); break;
     case 'block-detail': loadBlockDetail(data); break;
     case 'realm-detail': loadRealmDetail(data, urlTab); break;
     case 'tx-detail': loadTxDetail(data); break;
@@ -942,6 +946,65 @@ function renderValoperRows(container) {
     }
   }
   tbl.appendChild(tbody); wrap.appendChild(tbl);
+}
+
+async function loadGas() {
+  const container = clear('gas-content');
+  skeletonBlock(container);
+  try {
+    const data = await api('gas');
+    container.textContent = '';
+    // Stats
+    const statsBar = el('div', { className: 'stats-bar' });
+    statsBar.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'total txs'), el('span', { className: 'value' }, fmtNum(data.total_txs))));
+    statsBar.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'gas used'), el('span', { className: 'value' }, fmtNum(data.total_gas_used))));
+    statsBar.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'gas wanted'), el('span', { className: 'value' }, fmtNum(data.total_gas_wanted))));
+    const eff = data.total_gas_wanted > 0 ? (data.total_gas_used / data.total_gas_wanted * 100).toFixed(1) + '%' : '-';
+    statsBar.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'efficiency'), el('span', { className: 'value' }, eff)));
+    statsBar.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'total fees'), el('span', { className: 'value' }, fmtNum(data.total_fees) + ' ugnot')));
+    statsBar.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'avg gas/tx'), el('span', { className: 'value' }, fmtNum(data.avg_gas_per_tx))));
+    statsBar.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'success'), el('span', { className: 'value' }, fmtNum(data.success_count))));
+    statsBar.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'failed'), el('span', { className: 'value' }, fmtNum(data.fail_count))));
+    statsBar.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'total source'), el('span', { className: 'value' }, fmtNum(data.total_source_bytes) + ' bytes')));
+    container.appendChild(statsBar);
+
+    // Top realms by gas
+    container.appendChild(el('div', { className: 'section-title', style: { marginTop: '24px' } }, 'top realms by gas usage'));
+    const rtbl = el('table');
+    rtbl.appendChild(el('thead', {}, el('tr', {}, el('th', {}, 'realm'), el('th', {}, 'gas used'), el('th', {}, 'fees (ugnot)'), el('th', {}, 'txs'), el('th', {}, 'avg gas/tx'))));
+    const rbody = el('tbody');
+    for (const r of (data.top_realms || [])) {
+      const avg = r.tx_count > 0 ? Math.floor(r.gas / r.tx_count) : 0;
+      rbody.appendChild(el('tr', {},
+        el('td', {}, realmPathEl(r.path)),
+        el('td', {}, fmtNum(r.gas)),
+        el('td', {}, fmtNum(r.fees)),
+        el('td', {}, fmtNum(r.tx_count)),
+        el('td', {}, fmtNum(avg))
+      ));
+    }
+    rtbl.appendChild(rbody); container.appendChild(rtbl);
+
+    // Top txs by gas
+    container.appendChild(el('div', { className: 'section-title', style: { marginTop: '24px' } }, 'top transactions by gas'));
+    const ttbl = el('table');
+    ttbl.appendChild(el('thead', {}, el('tr', {}, el('th', {}, 'tx'), el('th', {}, 'type'), el('th', {}, 'detail'), el('th', {}, 'gas used'), el('th', {}, 'efficiency'), el('th', {}, 'fee'), el('th', {}, 'status'))));
+    const tbody = el('tbody');
+    for (const t of (data.top_txs || [])) {
+      const pct = t.gas_wanted > 0 ? (t.gas_used / t.gas_wanted * 100).toFixed(0) + '%' : '-';
+      const detailEl = t.detail ? realmPathEl(t.detail.includes('::') ? 'gno.land/' + t.detail.split('::')[0].replace('gno.land/','') : t.detail) : el('span', {}, '-');
+      tbody.appendChild(el('tr', {},
+        el('td', {}, txLink(t.hash, t.block_height)),
+        el('td', {}, typeBadge(t.type)),
+        el('td', {}, detailEl),
+        el('td', {}, fmtNum(t.gas_used)),
+        el('td', {}, pct),
+        el('td', {}, fmtNum(t.fee) + ' ugnot'),
+        el('td', {}, statusBadge(t.success))
+      ));
+    }
+    ttbl.appendChild(tbody); container.appendChild(ttbl);
+  } catch (err) { container.textContent = ''; container.appendChild(el('p', { style: { color: 'var(--red)' } }, 'Error: ' + err.message)); }
 }
 
 let _eventsCache = null;

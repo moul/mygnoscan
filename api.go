@@ -446,6 +446,150 @@ func (a *API) HandleStorage(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (a *API) HandleGas(w http.ResponseWriter, r *http.Request) {
+	txs, err := a.client.GetRecentTransactions(r.Context(), 0)
+	if err != nil {
+		jsonError(w, err.Error(), 500)
+		return
+	}
+
+	var totalGasUsed, totalGasWanted, totalFees int
+	var successCount, failCount int
+	type RealmGas struct {
+		Path    string `json:"path"`
+		Gas     int    `json:"gas"`
+		Fees    int    `json:"fees"`
+		TxCount int    `json:"tx_count"`
+	}
+	type TopTx struct {
+		Hash        string `json:"hash"`
+		BlockHeight int    `json:"block_height"`
+		GasUsed     int    `json:"gas_used"`
+		GasWanted   int    `json:"gas_wanted"`
+		Fee         int    `json:"fee"`
+		Type        string `json:"type"`
+		Detail      string `json:"detail"`
+		Success     bool   `json:"success"`
+	}
+	realmMap := make(map[string]*RealmGas)
+
+	for _, tx := range txs {
+		totalGasUsed += tx.GasUsed
+		totalGasWanted += tx.GasWanted
+		if tx.GasFee != nil {
+			totalFees += tx.GasFee.Amount
+		}
+		if tx.Success {
+			successCount++
+		} else {
+			failCount++
+		}
+		for _, m := range tx.Messages {
+			path := m.Value.PkgPath
+			if path == "" && m.Value.Package != nil {
+				path = m.Value.Package.Path
+			}
+			if path != "" {
+				rg, ok := realmMap[path]
+				if !ok {
+					rg = &RealmGas{Path: path}
+					realmMap[path] = rg
+				}
+				rg.Gas += tx.GasUsed
+				rg.TxCount++
+				if tx.GasFee != nil {
+					rg.Fees += tx.GasFee.Amount
+				}
+			}
+		}
+	}
+
+	// Sort realms by gas
+	var topRealms []RealmGas
+	for _, rg := range realmMap {
+		topRealms = append(topRealms, *rg)
+	}
+	// Sort descending by gas
+	for i := 0; i < len(topRealms); i++ {
+		for j := i + 1; j < len(topRealms); j++ {
+			if topRealms[j].Gas > topRealms[i].Gas {
+				topRealms[i], topRealms[j] = topRealms[j], topRealms[i]
+			}
+		}
+	}
+	if len(topRealms) > 20 {
+		topRealms = topRealms[:20]
+	}
+
+	// Top txs by gas
+	// Sort txs copy by gas_used desc
+	type byGas []Transaction
+	sorted := make([]Transaction, len(txs))
+	copy(sorted, txs)
+	for i := 0; i < len(sorted); i++ {
+		for j := i + 1; j < len(sorted); j++ {
+			if sorted[j].GasUsed > sorted[i].GasUsed {
+				sorted[i], sorted[j] = sorted[j], sorted[i]
+			}
+		}
+	}
+	var topTxs []TopTx
+	for _, tx := range sorted {
+		if len(topTxs) >= 20 {
+			break
+		}
+		typ := ""
+		detail := ""
+		for _, m := range tx.Messages {
+			typ = m.Value.Typename
+			if m.Value.PkgPath != "" {
+				detail = m.Value.PkgPath
+				if m.Value.Func != "" {
+					detail += "::" + m.Value.Func
+				}
+			} else if m.Value.Package != nil {
+				detail = m.Value.Package.Path
+			}
+		}
+		fee := 0
+		if tx.GasFee != nil {
+			fee = tx.GasFee.Amount
+		}
+		topTxs = append(topTxs, TopTx{
+			Hash: tx.Hash, BlockHeight: tx.BlockHeight,
+			GasUsed: tx.GasUsed, GasWanted: tx.GasWanted,
+			Fee: fee, Type: typ, Detail: detail, Success: tx.Success,
+		})
+	}
+
+	// Storage totals from DB
+	var totalStorageBytes int
+	a.db.db.QueryRow(`SELECT COALESCE(SUM(bytes_delta), 0) FROM (
+		SELECT bytes_delta FROM package_files pf
+		JOIN packages p ON p.path = pf.package_path
+	)`).Scan(&totalStorageBytes)
+	// Approximate: count total source bytes
+	a.db.db.QueryRow(`SELECT COALESCE(SUM(LENGTH(body)), 0) FROM package_files`).Scan(&totalStorageBytes)
+
+	avgGasPerTx := 0
+	if len(txs) > 0 {
+		avgGasPerTx = totalGasUsed / len(txs)
+	}
+
+	jsonResponse(w, map[string]any{
+		"total_txs":        len(txs),
+		"total_gas_used":   totalGasUsed,
+		"total_gas_wanted": totalGasWanted,
+		"total_fees":       totalFees,
+		"avg_gas_per_tx":   avgGasPerTx,
+		"success_count":    successCount,
+		"fail_count":       failCount,
+		"total_source_bytes": totalStorageBytes,
+		"top_realms":       topRealms,
+		"top_txs":          topTxs,
+	})
+}
+
 // fetchBalance queries the gno.land RPC for bank balance.
 func fetchBalance(ctx context.Context, addr string) string {
 	rpcURL := fmt.Sprintf("https://rpc.gno.land/abci_query?path=%%22bank/balances/%s%%22&data=0x", addr)
