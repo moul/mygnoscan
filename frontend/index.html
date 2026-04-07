@@ -168,8 +168,9 @@ footer a:hover { color: var(--accent); }
     <table><thead><tr><th>address</th><th>calls</th><th>deploys</th><th>msg_runs</th><th>sends</th><th>total</th></tr></thead><tbody id="accounts-list"></tbody></table></div></main></div>
   <div class="view" id="view-tokens"><main>
     <div id="tokens-stats" class="stats-bar" style="display:none"></div>
+    <div id="tokens-bank-content"></div>
     <div class="section"><div class="section-title">tokens (grc20)</div>
-    <table><thead><tr><th>path</th><th>name</th><th>creator</th><th>calls</th></tr></thead><tbody id="tokens-list"></tbody></table></div></main></div>
+    <table><thead><tr><th>path</th><th>creator</th><th>calls</th></tr></thead><tbody id="tokens-list"></tbody></table></div></main></div>
   <div class="view" id="view-validators"><main><div class="section"><div class="section-title">validators</div>
     <div id="validators-content"></div></div></main></div>
   <div class="view" id="view-govdao"><main><div id="govdao-stats" class="stats-bar" style="display:none"></div><div class="section"><div class="section-title">govdao activity</div>
@@ -853,15 +854,80 @@ async function loadAccounts() {
 async function loadTokens() {
   skeletonRows(clear('tokens-list'), 3, 5);
   const statsBar = document.getElementById('tokens-stats');
+  const bankContent = document.getElementById('tokens-bank-content');
   statsBar.style.display = 'none';
+  bankContent.textContent = '';
+  skeletonBlock(bankContent);
   try {
-    const data = await api('tokens');
+    const [data, bank] = await Promise.all([api('tokens'), api('bankstats')]);
+    // Stats: merge token + bank
     const totalCalls = (data || []).reduce((s, t) => s + t.call_count, 0);
-    const creators = new Set((data || []).map(t => t.creator));
     statsBar.textContent = ''; statsBar.style.display = 'flex';
-    statsBar.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'tokens'), el('span', { className: 'value' }, fmtNum((data || []).length))));
-    statsBar.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'total calls'), el('span', { className: 'value' }, fmtNum(totalCalls))));
-    statsBar.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'creators'), el('span', { className: 'value' }, fmtNum(creators.size))));
+    statsBar.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'grc20 tokens'), el('span', { className: 'value' }, fmtNum((data || []).length))));
+    statsBar.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'bank transfers'), el('span', { className: 'value' }, fmtNum(bank.total_sends))));
+    statsBar.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'volume'), el('span', { className: 'value' }, fmtNum(Math.floor(bank.total_volume / 1000000)) + ' GNOT')));
+    statsBar.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'unique addresses'), el('span', { className: 'value' }, fmtNum(bank.unique_addresses))));
+    statsBar.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'senders'), el('span', { className: 'value' }, fmtNum(bank.unique_senders))));
+    statsBar.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'receivers'), el('span', { className: 'value' }, fmtNum(bank.unique_receivers))));
+
+    // Bank analytics
+    bankContent.textContent = '';
+    const grid = el('div', { style: { display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '16px', marginBottom: '24px' } });
+
+    // Top senders
+    if ((bank.top_senders || []).length) {
+      const col = el('div');
+      col.appendChild(el('div', { className: 'section-title' }, 'top senders'));
+      const tbl = el('table');
+      tbl.appendChild(el('thead', {}, el('tr', {}, el('th', {}, 'address'), el('th', {}, 'txs'), el('th', {}, 'volume'))));
+      const body = el('tbody');
+      for (const s of bank.top_senders) {
+        body.appendChild(el('tr', {},
+          el('td', {}, addrLink(s.address)),
+          el('td', {}, fmtNum(s.count)),
+          el('td', {}, fmtNum(Math.floor(s.total / 1000000)) + ' GNOT')
+        ));
+      }
+      tbl.appendChild(body); col.appendChild(tbl); grid.appendChild(col);
+    }
+
+    // Top receivers by volume
+    if ((bank.top_receivers_volume || []).length) {
+      const col = el('div');
+      col.appendChild(el('div', { className: 'section-title' }, 'top receivers (volume)'));
+      const tbl = el('table');
+      tbl.appendChild(el('thead', {}, el('tr', {}, el('th', {}, 'address'), el('th', {}, 'volume'), el('th', {}, 'txs'))));
+      const body = el('tbody');
+      for (const s of bank.top_receivers_volume) {
+        body.appendChild(el('tr', {},
+          el('td', {}, addrLink(s.address)),
+          el('td', {}, fmtNum(Math.floor(s.total / 1000000)) + ' GNOT'),
+          el('td', {}, fmtNum(s.count))
+        ));
+      }
+      tbl.appendChild(body); col.appendChild(tbl); grid.appendChild(col);
+    }
+
+    // Top receivers by count
+    if ((bank.top_receivers_count || []).length) {
+      const col = el('div');
+      col.appendChild(el('div', { className: 'section-title' }, 'top receivers (count)'));
+      const tbl = el('table');
+      tbl.appendChild(el('thead', {}, el('tr', {}, el('th', {}, 'address'), el('th', {}, 'txs'), el('th', {}, 'volume'))));
+      const body = el('tbody');
+      for (const s of bank.top_receivers_count) {
+        body.appendChild(el('tr', {},
+          el('td', {}, addrLink(s.address)),
+          el('td', {}, fmtNum(s.count)),
+          el('td', {}, fmtNum(Math.floor(s.total / 1000000)) + ' GNOT')
+        ));
+      }
+      tbl.appendChild(body); col.appendChild(tbl); grid.appendChild(col);
+    }
+
+    bankContent.appendChild(grid);
+
+    // GRC20 tokens list
     const tbody = clear('tokens-list');
     for (const t of (data || [])) {
       tbody.appendChild(el('tr', {},
