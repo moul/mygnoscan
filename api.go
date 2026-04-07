@@ -102,15 +102,17 @@ func (a *API) HandleTx(w http.ResponseWriter, r *http.Request) {
 func (a *API) HandleTxs(w http.ResponseWriter, r *http.Request) {
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 	offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
-	if limit == 0 {
-		limit = 50
-	}
 	txs, err := a.client.GetRecentTransactions(r.Context(), 0)
 	if err != nil {
 		jsonError(w, err.Error(), 500)
 		return
 	}
 	total := len(txs)
+	// limit=0 means return all
+	if limit <= 0 {
+		jsonResponse(w, map[string]any{"items": txs, "total": total})
+		return
+	}
 	if offset > total {
 		offset = total
 	}
