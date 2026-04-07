@@ -90,6 +90,10 @@ pre { background: var(--bg2); border: 1px solid var(--border); border-radius: 4p
 .pager-btn:hover { border-color: var(--accent); color: var(--accent); }
 .pager-btn:disabled { opacity: 0.3; cursor: default; border-color: var(--border); color: var(--fg2); }
 .pager-info { color: var(--fg2); font-size: 12px; }
+/* Realm path styling */
+.rp-type { color: var(--fg2); }
+.rp-ns { color: #61afef; }
+.rp-name { color: var(--fg); font-weight: bold; }
 /* Footer */
 footer { border-top: 1px solid var(--border); padding: 16px 0; margin-top: 40px; color: var(--fg2); font-size: 12px; }
 footer .container { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; }
@@ -138,18 +142,24 @@ footer a:hover { color: var(--accent); }
       <div class="section"><div class="section-title">recent activity</div>
         <table><thead><tr><th>block</th><th>type</th><th>detail</th><th>status</th><th>when</th></tr></thead><tbody id="recent-txs"></tbody></table></div>
       <div class="section"><div class="section-title">latest realms</div>
-        <table><thead><tr><th>path</th><th>name</th><th>creator</th><th>files</th></tr></thead><tbody id="latest-realms"></tbody></table></div>
+        <table><thead><tr><th>path</th><th>creator</th><th>files</th><th>block</th></tr></thead><tbody id="latest-realms"></tbody></table></div>
     </main>
   </div>
   <div class="view" id="view-realms"><main><div class="section"><div class="section-title">all realms</div>
-    <table><thead><tr><th>path</th><th>name</th><th>creator</th><th>block</th><th>files</th></tr></thead><tbody id="realms-list"></tbody></table></div></main></div>
+    <table><thead><tr><th>path</th><th>creator</th><th>block</th><th>files</th></tr></thead><tbody id="realms-list"></tbody></table></div></main></div>
   <div class="view" id="view-packages"><main><div class="section"><div class="section-title">all packages</div>
-    <table><thead><tr><th>path</th><th>name</th><th>creator</th><th>block</th><th>files</th></tr></thead><tbody id="packages-list"></tbody></table></div></main></div>
+    <table><thead><tr><th>path</th><th>creator</th><th>block</th><th>files</th></tr></thead><tbody id="packages-list"></tbody></table></div></main></div>
   <div class="view" id="view-txs"><main><div class="section"><div class="section-title">recent transactions</div>
     <table><thead><tr><th>hash</th><th>block</th><th>type</th><th>detail</th><th>status</th></tr></thead><tbody id="txs-list"></tbody></table></div></main></div>
-  <div class="view" id="view-blocks"><main><div class="section"><div class="section-title">recent blocks</div>
-    <table><thead><tr><th>height</th><th>time</th><th>txs</th><th>proposer</th><th>hash</th></tr></thead><tbody id="blocks-list"></tbody></table></div></main></div>
-  <div class="view" id="view-accounts"><main><div class="section"><div class="section-title">active accounts</div>
+  <div class="view" id="view-blocks"><main>
+    <div id="blocks-stats" class="stats-bar" style="display:none"></div>
+    <div id="blocks-filter" style="display:none; padding: 8px 0; margin-bottom: 4px"></div>
+    <div class="section"><div class="section-title">recent blocks</div>
+    <table><thead><tr><th>height</th><th>time</th><th>txs</th><th>proposer</th><th>hash</th></tr></thead><tbody id="blocks-list"></tbody></table></div>
+  </main></div>
+  <div class="view" id="view-accounts"><main>
+    <div id="accounts-stats" class="stats-bar" style="display:none"></div>
+    <div class="section"><div class="section-title">active accounts</div>
     <table><thead><tr><th>address</th><th>calls</th><th>deploys</th><th>msg_runs</th><th>sends</th><th>total</th></tr></thead><tbody id="accounts-list"></tbody></table></div></main></div>
   <div class="view" id="view-tokens"><main><div class="section"><div class="section-title">tokens (grc20)</div>
     <table><thead><tr><th>path</th><th>name</th><th>creator</th><th>calls</th></tr></thead><tbody id="tokens-list"></tbody></table></div></main></div>
@@ -228,6 +238,38 @@ function addrLink(addr) {
   span.appendChild(a);
   if (label) {
     span.appendChild(el('span', { className: 'block-ctx' }, ' ' + addr.slice(0, 8) + '...'));
+  }
+  return span;
+}
+// Pretty realm path: /r/namespace/name or /p/namespace/name
+// Colors: type dim, namespace blue, name bold white
+// g1... namespaces get shortened
+function realmPathEl(fullPath) {
+  const path = fullPath.replace('gno.land', '');
+  // Parse: /r/namespace/rest or /p/namespace/rest
+  const m = path.match(/^\/([rp])\/([^/]+)(\/.*)?$/);
+  if (!m) {
+    // Fallback: just show path
+    return link(path, () => navigate('/realm' + path));
+  }
+  const type = m[1]; // r or p
+  const ns = m[2]; // namespace (could be g1... or a name)
+  const rest = m[3] || ''; // /pkgname or /sub/path
+  const span = el('span', { style: { cursor: 'pointer' } });
+  span.addEventListener('click', () => navigate('/realm' + path));
+  // Type prefix
+  span.appendChild(el('span', { className: 'rp-type' }, '/' + type + '/'));
+  // Namespace: shorten if g1 address
+  if (ns.match(/^g1[a-z0-9]{38,}/)) {
+    const nsEl = el('span', { className: 'rp-ns' }, ns.slice(0, 8) + '...');
+    nsEl.setAttribute('data-hl', ns);
+    span.appendChild(nsEl);
+  } else {
+    span.appendChild(el('span', { className: 'rp-ns' }, ns));
+  }
+  // Package name (bold)
+  if (rest) {
+    span.appendChild(el('span', { className: 'rp-name' }, rest));
   }
   return span;
 }
@@ -482,9 +524,10 @@ async function loadHome() {
     const tbody = clear('latest-realms');
     for (const r of (realmsData.items || [])) {
       tbody.appendChild(el('tr', {},
-        el('td', {}, link(r.path, () => navigate('/realm/' + r.path.replace('gno.land/', '')))),
-        el('td', {}, r.name), el('td', { className: 'truncate' }, shortAddr(r.creator)),
-        el('td', {}, String(r.num_files))
+        el('td', {}, realmPathEl(r.path)),
+        el('td', {}, addrLink(r.creator)),
+        el('td', {}, String(r.num_files)),
+        el('td', {}, blockLink(r.block_height))
       ));
     }
     const txBody = clear('recent-txs');
@@ -514,8 +557,8 @@ async function loadRealms(page) {
     const list = clear('realms-list');
     for (const r of (data.items || [])) {
       list.appendChild(el('tr', {},
-        el('td', {}, link(r.path, () => navigate('/realm/' + r.path.replace('gno.land/', '')))),
-        el('td', {}, r.name), el('td', { className: 'truncate' }, addrLink(r.creator)),
+        el('td', {}, realmPathEl(r.path)),
+        el('td', {}, addrLink(r.creator)),
         el('td', {}, blockLink(r.block_height)), el('td', {}, String(r.num_files))
       ));
     }
@@ -534,8 +577,8 @@ async function loadPackages(page) {
     const list = clear('packages-list');
     for (const p of (data.items || [])) {
       list.appendChild(el('tr', {},
-        el('td', {}, link(p.path, () => navigate('/realm/' + p.path.replace('gno.land/', '')))),
-        el('td', {}, p.name), el('td', { className: 'truncate' }, addrLink(p.creator)),
+        el('td', {}, realmPathEl(p.path)),
+        el('td', {}, addrLink(p.creator)),
         el('td', {}, blockLink(p.block_height)), el('td', {}, String(p.num_files))
       ));
     }
@@ -566,21 +609,51 @@ async function loadTxs(page) {
   } catch (err) { console.error(err); }
 }
 
+let _blocksCache = null;
+let _blocksWithTxsOnly = false;
+
 async function loadBlocks() {
   skeletonRows(clear('blocks-list'), 5, 10);
+  const statsBar = document.getElementById('blocks-stats');
+  const filterBar = document.getElementById('blocks-filter');
+  statsBar.style.display = 'none';
+  filterBar.style.display = 'none';
   try {
     const data = await api('blocks?limit=50');
-    const tbody = clear('blocks-list');
-    for (const b of (data || [])) {
-      tbody.appendChild(el('tr', {},
-        el('td', {}, blockLink(b.height)),
-        el('td', {}, timeAgo(b.time)),
-        el('td', {}, String(b.num_txs)),
-        el('td', { className: 'truncate' }, addrLink(b.proposer_address_raw)),
-        el('td', { className: 'truncate' }, b.hash)
-      ));
-    }
+    _blocksCache = data;
+    _blocksWithTxsOnly = false;
+    const withTxs = (data || []).filter(b => b.num_txs > 0);
+    const proposers = new Set((data || []).map(b => b.proposer_address_raw));
+    // Stats
+    statsBar.textContent = '';
+    statsBar.style.display = 'flex';
+    statsBar.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'blocks'), el('span', { className: 'value' }, fmtNum((data || []).length))));
+    statsBar.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'with txs'), el('span', { className: 'value' }, fmtNum(withTxs.length))));
+    statsBar.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'proposers'), el('span', { className: 'value' }, fmtNum(proposers.size))));
+    // Filter
+    filterBar.textContent = '';
+    filterBar.style.display = 'flex';
+    const cb = document.createElement('input'); cb.type = 'checkbox'; cb.id = 'blocks-filter-txs';
+    cb.addEventListener('change', () => { _blocksWithTxsOnly = cb.checked; renderBlockRows(); });
+    const label = el('label', { style: { display: 'flex', alignItems: 'center', gap: '6px', color: 'var(--fg2)', fontSize: '13px', cursor: 'pointer' } });
+    label.appendChild(cb); label.appendChild(document.createTextNode('only blocks with transactions'));
+    filterBar.appendChild(label);
+    renderBlockRows();
   } catch (err) { console.error(err); }
+}
+
+function renderBlockRows() {
+  const tbody = clear('blocks-list');
+  for (const b of (_blocksCache || [])) {
+    if (_blocksWithTxsOnly && b.num_txs === 0) continue;
+    tbody.appendChild(el('tr', {},
+      el('td', {}, blockLink(b.height)),
+      el('td', {}, timeAgo(b.time)),
+      el('td', {}, String(b.num_txs)),
+      el('td', { className: 'truncate' }, addrLink(b.proposer_address_raw)),
+      el('td', { className: 'truncate' }, b.hash)
+    ));
+  }
 }
 
 async function loadBlockDetail(height) {
@@ -623,9 +696,19 @@ async function loadBlockDetail(height) {
 }
 
 async function loadAccounts() {
-  skeletonRows(clear('accounts-list'), 5, 10);
+  skeletonRows(clear('accounts-list'), 6, 10);
+  const statsBar = document.getElementById('accounts-stats');
+  statsBar.style.display = 'none';
   try {
     const data = await api('accounts');
+    // Stats
+    const totalCalls = (data || []).reduce((s, a) => s + a.call_count, 0);
+    const totalSends = (data || []).reduce((s, a) => s + (a.send_count || 0), 0);
+    statsBar.textContent = '';
+    statsBar.style.display = 'flex';
+    statsBar.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'accounts'), el('span', { className: 'value' }, fmtNum((data || []).length))));
+    statsBar.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'total calls'), el('span', { className: 'value' }, fmtNum(totalCalls))));
+    statsBar.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'total sends'), el('span', { className: 'value' }, fmtNum(totalSends))));
     const tbody = clear('accounts-list');
     for (const a of (data || [])) {
       const total = a.call_count + a.deploy_count + a.msgrun_count + (a.send_count || 0);
@@ -647,9 +730,8 @@ async function loadTokens() {
     const tbody = clear('tokens-list');
     for (const t of (data || [])) {
       tbody.appendChild(el('tr', {},
-        el('td', {}, link(t.path, () => navigate('/realm/' + t.path.replace('gno.land/', '')))),
-        el('td', {}, t.name),
-        el('td', { className: 'truncate' }, addrLink(t.creator)),
+        el('td', {}, realmPathEl(t.path)),
+        el('td', {}, addrLink(t.creator)),
         el('td', {}, String(t.call_count))
       ));
     }
@@ -1027,8 +1109,8 @@ async function loadAddressDetail(addr) {
       const ptbl = el('table');
       for (const p of data.packages) {
         ptbl.appendChild(el('tr', {},
-          el('td', {}, link(p.path, () => navigate('/realm/' + p.path.replace('gno.land/', '')))),
-          el('td', {}, p.name), el('td', {}, p.is_realm ? 'realm' : 'package')
+          el('td', {}, realmPathEl(p.path)),
+          el('td', {}, p.is_realm ? 'realm' : 'package')
         ));
       }
       container.appendChild(ptbl);
