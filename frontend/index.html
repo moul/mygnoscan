@@ -136,7 +136,7 @@ footer a:hover { color: var(--accent); }
     </div>
     <main>
       <div class="section"><div class="section-title">recent activity</div>
-        <table><thead><tr><th>block</th><th>type</th><th>detail</th><th>status</th></tr></thead><tbody id="recent-txs"></tbody></table></div>
+        <table><thead><tr><th>block</th><th>type</th><th>detail</th><th>status</th><th>when</th></tr></thead><tbody id="recent-txs"></tbody></table></div>
       <div class="section"><div class="section-title">latest realms</div>
         <table><thead><tr><th>path</th><th>name</th><th>creator</th><th>files</th></tr></thead><tbody id="latest-realms"></tbody></table></div>
     </main>
@@ -158,8 +158,12 @@ footer a:hover { color: var(--accent); }
   <div class="view" id="view-govdao"><main><div class="section"><div class="section-title">govdao activity</div>
     <table><thead><tr><th>block</th><th>caller</th><th>function</th><th>status</th><th>tx</th></tr></thead><tbody id="govdao-list"></tbody></table></div></main></div>
   <div class="view" id="view-block-detail"><main><div id="block-detail-content"></div></main></div>
-  <div class="view" id="view-events"><main><div class="section"><div class="section-title">recent events</div>
-    <table><thead><tr><th>block</th><th>realm</th><th>type</th><th>attributes</th><th>tx</th></tr></thead><tbody id="events-list"></tbody></table></div></main></div>
+  <div class="view" id="view-events"><main>
+    <div id="events-stats" class="stats-bar" style="display:none"></div>
+    <div id="events-filter" style="display:none; padding: 8px 0; margin-bottom: 12px; display: flex; gap: 8px; flex-wrap: wrap; align-items: center"></div>
+    <div class="section"><div class="section-title">recent events</div>
+    <table><thead><tr><th>block</th><th>realm</th><th>type</th><th>attributes</th><th>tx</th></tr></thead><tbody id="events-list"></tbody></table></div>
+  </main></div>
   <div class="view" id="view-realm-detail"><main>
     <div id="realm-header"></div>
     <div class="tabs" id="realm-tabs"></div>
@@ -458,10 +462,12 @@ function route() {
 
 // --- Loaders ---
 async function loadHome() {
-  skeletonRows(clear('recent-txs'), 4, 8);
+  skeletonRows(clear('recent-txs'), 5, 8);
   skeletonRows(clear('latest-realms'), 4, 5);
   try {
-    const [stats, realmsData, txsData] = await Promise.all([api('stats'), api('realms?limit=10'), api('txs?limit=20')]);
+    const [stats, realmsData, txsData, blocksData] = await Promise.all([
+      api('stats'), api('realms?limit=10'), api('txs?limit=20'), api('blocks?limit=50')
+    ]);
     document.getElementById('stat-txs').textContent = fmtNum(stats.total_txs);
     document.getElementById('stat-calls').textContent = fmtNum(stats.total_calls);
     document.getElementById('stat-deploys').textContent = fmtNum(stats.total_deploys);
@@ -470,6 +476,9 @@ async function loadHome() {
     document.getElementById('stat-realms').textContent = fmtNum(stats.total_realms);
     document.getElementById('stat-packages').textContent = fmtNum(stats.total_packages);
     document.getElementById('stat-block').textContent = fmtNum(stats.latest_block);
+    // Block height → time lookup
+    const blockTime = {};
+    for (const b of (blocksData || [])) blockTime[b.height] = b.time;
     const tbody = clear('latest-realms');
     for (const r of (realmsData.items || [])) {
       tbody.appendChild(el('tr', {},
@@ -481,11 +490,13 @@ async function loadHome() {
     const txBody = clear('recent-txs');
     for (const tx of (txsData.items || [])) {
       const msg = tx.messages?.[0];
+      const when = blockTime[tx.block_height] ? timeAgo(blockTime[tx.block_height]) : (tx.block_height === 0 ? 'genesis' : '');
       txBody.appendChild(el('tr', {},
-        el('td', {}, link(blockLabel(tx.block_height), () => navigate('/blocks'))),
+        el('td', {}, blockLink(tx.block_height)),
         el('td', {}, typeBadge(msg?.value?.__typename)),
         el('td', {}, txDetailEl(msg)),
-        el('td', {}, statusBadge(tx.success))
+        el('td', {}, statusBadge(tx.success)),
+        el('td', { style: { color: 'var(--fg2)', fontSize: '12px' } }, when)
       ));
     }
   } catch (err) { console.error('home:', err); }
@@ -698,31 +709,81 @@ async function loadValidators() {
   } catch (err) { console.error(err); }
 }
 
+let _eventsCache = null;
+let _eventsFilter = null;
+
 async function loadEvents() {
   const tbody = clear('events-list');
   skeletonRows(tbody, 5, 10);
+  const statsBar = document.getElementById('events-stats');
+  const filterBar = document.getElementById('events-filter');
+  statsBar.style.display = 'none';
+  filterBar.style.display = 'none';
   try {
     const data = await api('allevents');
-    const list = clear('events-list');
-    if (!(data || []).length) {
-      list.appendChild(el('tr', {}, el('td', { colspan: '5', style: { color: 'var(--fg2)' } }, 'no events found')));
-      return;
-    }
-    for (const item of data) {
+    _eventsCache = data;
+    _eventsFilter = null;
+
+    // Flatten events
+    const flat = [];
+    for (const item of (data || [])) {
       for (const ev of item.events) {
-        const attrStr = (ev.attrs || []).map(a => a.key + '=' + a.value).join(', ');
-        const realmLink = ev.pkg_path ? link(ev.pkg_path, () => navigate('/realm/' + ev.pkg_path.replace('gno.land/', ''))) : el('span', {}, '-');
-        if (ev.pkg_path) realmLink.setAttribute('data-hl', 'realm:' + ev.pkg_path);
-        list.appendChild(el('tr', {},
-          el('td', {}, blockLink(item.block_height)),
-          el('td', {}, realmLink),
-          el('td', {}, badge('realm', ev.type || 'event')),
-          el('td', {}, attrStr ? linkify(attrStr) : el('span', {}, '-')),
-          el('td', {}, txLink(item.tx_hash, item.block_height))
-        ));
+        flat.push({ block: item.block_height, tx: item.tx_hash, success: item.success, ...ev });
       }
     }
+
+    // Stats
+    const types = new Set(flat.map(e => e.type || 'unknown'));
+    const realms = new Set(flat.map(e => e.pkg_path).filter(Boolean));
+    statsBar.textContent = '';
+    statsBar.style.display = 'flex';
+    statsBar.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'events'), el('span', { className: 'value' }, fmtNum(flat.length))));
+    statsBar.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'types'), el('span', { className: 'value' }, fmtNum(types.size))));
+    statsBar.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'realms'), el('span', { className: 'value' }, fmtNum(realms.size))));
+
+    // Filter buttons
+    filterBar.textContent = '';
+    filterBar.style.display = 'flex';
+    filterBar.appendChild(el('span', { style: { color: 'var(--fg2)', fontSize: '12px', marginRight: '4px' } }, 'filter:'));
+    const allBtn = el('button', { className: 'pager-btn', style: { padding: '3px 10px', fontSize: '12px' }, onclick: () => { _eventsFilter = null; renderEventRows(data); setActiveFilter(allBtn); } }, 'all');
+    allBtn.style.borderColor = 'var(--accent)'; allBtn.style.color = 'var(--accent)';
+    filterBar.appendChild(allBtn);
+    for (const t of [...types].sort()) {
+      const btn = el('button', { className: 'pager-btn', style: { padding: '3px 10px', fontSize: '12px' }, onclick: () => { _eventsFilter = t; renderEventRows(data); setActiveFilter(btn); } }, t);
+      filterBar.appendChild(btn);
+    }
+
+    renderEventRows(data);
   } catch (err) { console.error(err); }
+}
+
+function setActiveFilter(activeBtn) {
+  const bar = document.getElementById('events-filter');
+  bar.querySelectorAll('.pager-btn').forEach(b => { b.style.borderColor = ''; b.style.color = ''; });
+  activeBtn.style.borderColor = 'var(--accent)'; activeBtn.style.color = 'var(--accent)';
+}
+
+function renderEventRows(data) {
+  const list = clear('events-list');
+  if (!(data || []).length) {
+    list.appendChild(el('tr', {}, el('td', { colspan: '5', style: { color: 'var(--fg2)' } }, 'no events found')));
+    return;
+  }
+  for (const item of data) {
+    for (const ev of item.events) {
+      if (_eventsFilter && (ev.type || 'unknown') !== _eventsFilter) continue;
+      const attrStr = (ev.attrs || []).map(a => a.key + '=' + a.value).join(', ');
+      const realmLink = ev.pkg_path ? link(ev.pkg_path, () => navigate('/realm/' + ev.pkg_path.replace('gno.land/', ''))) : el('span', {}, '-');
+      if (ev.pkg_path) realmLink.setAttribute('data-hl', 'realm:' + ev.pkg_path);
+      list.appendChild(el('tr', {},
+        el('td', {}, blockLink(item.block_height)),
+        el('td', {}, realmLink),
+        el('td', {}, badge('realm', ev.type || 'event')),
+        el('td', {}, attrStr ? linkify(attrStr) : el('span', {}, '-')),
+        el('td', {}, txLink(item.tx_hash, item.block_height))
+      ));
+    }
+  }
 }
 
 async function loadGovDAO() {
