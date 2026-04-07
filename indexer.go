@@ -352,28 +352,22 @@ func (c *IndexerClient) GetTransactionsByAddress(ctx context.Context, addr strin
 	q := fmt.Sprintf(`{
 		getTransactions(
 			where: {
-				_or: {
-					messages: {
-						value: {
-							_or: {
-								MsgCall: { caller: { eq: "%s" } }
-								MsgAddPackage: { creator: { eq: "%s" } }
-								MsgRun: { caller: { eq: "%s" } }
-								BankMsgSend: {
-									_or: {
-										from_address: { eq: "%s" }
-										to_address: { eq: "%s" }
-									}
-								}
-							}
-						}
-					}
-				}
+				_or: [
+					{ messages: { value: { MsgCall: { caller: { eq: "%s" } } } } }
+					{ messages: { value: { MsgAddPackage: { creator: { eq: "%s" } } } } }
+					{ messages: { value: { MsgRun: { caller: { eq: "%s" } } } } }
+					{ messages: { value: { BankMsgSend: { from_address: { eq: "%s" } } } } }
+					{ messages: { value: { BankMsgSend: { to_address: { eq: "%s" } } } } }
+				]
 			}
 			order: { heightAndIndex: DESC }
 		) { %s }
 	}`, addr, addr, addr, addr, addr, txFieldsLight)
 	err := c.query(ctx, q, nil, &result)
+	// Cap at 200 most recent to avoid huge responses
+	if len(result.GetTransactions) > 200 {
+		return result.GetTransactions[:200], err
+	}
 	return result.GetTransactions, err
 }
 
