@@ -145,9 +145,9 @@ footer a:hover { color: var(--accent); }
         <table><thead><tr><th>path</th><th>creator</th><th>files</th><th>block</th></tr></thead><tbody id="latest-realms"></tbody></table></div>
     </main>
   </div>
-  <div class="view" id="view-realms"><main><div class="section"><div class="section-title">all realms</div>
+  <div class="view" id="view-realms"><main><div id="realms-stats" class="stats-bar" style="display:none"></div><div class="section"><div class="section-title">all realms</div>
     <table><thead><tr><th>path</th><th>creator</th><th>block</th><th>files</th></tr></thead><tbody id="realms-list"></tbody></table></div></main></div>
-  <div class="view" id="view-packages"><main><div class="section"><div class="section-title">all packages</div>
+  <div class="view" id="view-packages"><main><div id="packages-stats" class="stats-bar" style="display:none"></div><div class="section"><div class="section-title">all packages</div>
     <table><thead><tr><th>path</th><th>creator</th><th>block</th><th>files</th></tr></thead><tbody id="packages-list"></tbody></table></div></main></div>
   <div class="view" id="view-txs"><main>
     <div id="txs-stats" class="stats-bar" style="display:none"></div>
@@ -170,7 +170,7 @@ footer a:hover { color: var(--accent); }
     <table><thead><tr><th>path</th><th>name</th><th>creator</th><th>calls</th></tr></thead><tbody id="tokens-list"></tbody></table></div></main></div>
   <div class="view" id="view-validators"><main><div class="section"><div class="section-title">validators</div>
     <div id="validators-content"></div></div></main></div>
-  <div class="view" id="view-govdao"><main><div class="section"><div class="section-title">govdao activity</div>
+  <div class="view" id="view-govdao"><main><div id="govdao-stats" class="stats-bar" style="display:none"></div><div class="section"><div class="section-title">govdao activity</div>
     <table><thead><tr><th>block</th><th>caller</th><th>function</th><th>status</th><th>tx</th></tr></thead><tbody id="govdao-list"></tbody></table></div></main></div>
   <div class="view" id="view-block-detail"><main><div id="block-detail-content"></div></main></div>
   <div class="view" id="view-events"><main>
@@ -554,11 +554,17 @@ async function loadRealms(page) {
   page = page || 0;
   const section = document.querySelector('#view-realms .section');
   const tbody = clear('realms-list');
-  skeletonRows(tbody, 5, 10);
-  // Remove old pager
+  skeletonRows(tbody, 4, 10);
   section.querySelectorAll('.pager').forEach(p => p.remove());
+  const statsBar = document.getElementById('realms-stats');
   try {
     const data = await api('realms?limit=' + PAGE_SIZE + '&offset=' + (page * PAGE_SIZE));
+    if (page === 0) {
+      const creators = new Set((data.items || []).map(r => r.creator));
+      statsBar.textContent = ''; statsBar.style.display = 'flex';
+      statsBar.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'total realms'), el('span', { className: 'value' }, fmtNum(data.total || 0))));
+      statsBar.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'creators (page)'), el('span', { className: 'value' }, fmtNum(creators.size))));
+    }
     const list = clear('realms-list');
     for (const r of (data.items || [])) {
       list.appendChild(el('tr', {},
@@ -575,10 +581,15 @@ async function loadPackages(page) {
   page = page || 0;
   const section = document.querySelector('#view-packages .section');
   const tbody = clear('packages-list');
-  skeletonRows(tbody, 5, 10);
+  skeletonRows(tbody, 4, 10);
   section.querySelectorAll('.pager').forEach(p => p.remove());
+  const statsBar = document.getElementById('packages-stats');
   try {
     const data = await api('packages?limit=' + PAGE_SIZE + '&offset=' + (page * PAGE_SIZE));
+    if (page === 0) {
+      statsBar.textContent = ''; statsBar.style.display = 'flex';
+      statsBar.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'total packages'), el('span', { className: 'value' }, fmtNum(data.total || 0))));
+    }
     const list = clear('packages-list');
     for (const p of (data.items || [])) {
       list.appendChild(el('tr', {},
@@ -923,9 +934,18 @@ function renderEventRows(data) {
 async function loadGovDAO() {
   const tbody = clear('govdao-list');
   skeletonRows(tbody, 5, 5);
+  const statsBar = document.getElementById('govdao-stats');
+  statsBar.style.display = 'none';
   try {
-    // Fetch both events and calls for gov/dao
     const [events, calls] = await Promise.all([api('events/r/gov/dao'), api('govdao')]);
+    // Stats
+    const totalEvents = (events || []).reduce((s, item) => s + item.events.length, 0);
+    const types = new Set();
+    for (const item of (events || [])) for (const ev of item.events) types.add(ev.type || 'unknown');
+    statsBar.textContent = ''; statsBar.style.display = 'flex';
+    statsBar.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'proposals'), el('span', { className: 'value' }, fmtNum(totalEvents))));
+    statsBar.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'event types'), el('span', { className: 'value' }, fmtNum(types.size))));
+    statsBar.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'govdao txs'), el('span', { className: 'value' }, fmtNum((calls || []).length))));
     const list = clear('govdao-list');
     // Events (proposals)
     if ((events || []).length) {
