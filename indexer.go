@@ -30,6 +30,15 @@ func NewIndexerClient(url string) *IndexerClient {
 	}
 }
 
+// gqlEscape sanitizes a string for safe use inside GraphQL string literals.
+func gqlEscape(s string) string {
+	s = strings.ReplaceAll(s, `\`, `\\`)
+	s = strings.ReplaceAll(s, `"`, `\"`)
+	s = strings.ReplaceAll(s, "\n", `\n`)
+	s = strings.ReplaceAll(s, "\r", `\r`)
+	return s
+}
+
 type gqlRequest struct {
 	Query     string         `json:"query"`
 	Variables map[string]any `json:"variables,omitempty"`
@@ -346,7 +355,7 @@ func (c *IndexerClient) GetTransactionsByPkgPath(ctx context.Context, pkgPath st
 			where: { messages: { value: { MsgCall: { pkg_path: { eq: "%s" } } } } }
 			order: { heightAndIndex: DESC }
 		) { %s }
-	}`, pkgPath, txFieldsLight)
+	}`, gqlEscape(pkgPath), txFieldsLight)
 	err := c.query(ctx, q, nil, &result)
 	return result.GetTransactions, err
 }
@@ -360,7 +369,7 @@ func (c *IndexerClient) GetTransactionByHash(ctx context.Context, hash string) (
 		getTransactions(
 			where: { hash: { eq: "%s" } }
 		) { %s }
-	}`, hash, txFields)
+	}`, gqlEscape(hash), txFields)
 	err := c.query(ctx, q, nil, &result)
 	if err != nil {
 		return nil, err
@@ -389,7 +398,7 @@ func (c *IndexerClient) GetTransactionsByAddress(ctx context.Context, addr strin
 			}
 			order: { heightAndIndex: DESC }
 		) { %s }
-	}`, addr, addr, addr, addr, addr, txFieldsLight)
+	}`, gqlEscape(addr), gqlEscape(addr), gqlEscape(addr), gqlEscape(addr), gqlEscape(addr), txFieldsLight)
 	err := c.query(ctx, q, nil, &result)
 	// Cap at 200 most recent to avoid huge responses
 	if len(result.GetTransactions) > 200 {
@@ -491,7 +500,7 @@ func (c *IndexerClient) GetTransactionsByRealmFunc(ctx context.Context, pkgPath,
 			where: { messages: { value: { MsgCall: { pkg_path: { eq: "%s" }, func: { eq: "%s" } } } } }
 			order: { heightAndIndex: DESC }
 		) { %s }
-	}`, pkgPath, funcName, txFieldsLight)
+	}`, gqlEscape(pkgPath), gqlEscape(funcName), txFieldsLight)
 	err := c.query(ctx, q, nil, &result)
 	return result.GetTransactions, err
 }
@@ -539,7 +548,7 @@ func (c *IndexerClient) GetStorageEvents(ctx context.Context, pkgPath string) ([
 				}
 			}
 		}
-	}`, pkgPath, pkgPath)
+	}`, gqlEscape(pkgPath), gqlEscape(pkgPath))
 	err := c.query(ctx, q, nil, &result)
 	return result.GetTransactions, err
 }
@@ -562,7 +571,7 @@ func (c *IndexerClient) GetGasUsageForRealm(ctx context.Context, pkgPath string)
 			hash block_height gas_used gas_wanted gas_fee { amount denom } success
 			messages { value { __typename ... on MsgCall { func } } }
 		}
-	}`, pkgPath, pkgPath)
+	}`, gqlEscape(pkgPath), gqlEscape(pkgPath))
 	err := c.query(ctx, q, nil, &result)
 	return result.GetTransactions, err
 }
@@ -592,7 +601,7 @@ func (c *IndexerClient) GetEventsByPkgPath(ctx context.Context, pkgPath string) 
 			where: { response: { events: { GnoEvent: { pkg_path: { eq: "%s" } } } } }
 			order: { heightAndIndex: DESC }
 		) { %s }
-	}`, pkgPath, txFieldsLight)
+	}`, gqlEscape(pkgPath), txFieldsLight)
 	err := c.query(ctx, q, nil, &result)
 	return result.GetTransactions, err
 }

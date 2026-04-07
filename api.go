@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -319,71 +320,12 @@ func (a *API) HandleAccounts(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) HandleBankStats(w http.ResponseWriter, r *http.Request) {
-	a.db.mu.RLock()
-	defer a.db.mu.RUnlock()
-
-	type AddrStat struct {
-		Address string `json:"address"`
-		Count   int    `json:"count"`
-		Total   int64  `json:"total"`
+	stats, err := a.db.GetBankStats()
+	if err != nil {
+		jsonError(w, err.Error(), 500)
+		return
 	}
-
-	var totalSends, uniqueSenders, uniqueReceivers int
-	var totalVolume int64
-	a.db.db.QueryRow(`SELECT COUNT(*) FROM bank_sends`).Scan(&totalSends)
-	a.db.db.QueryRow(`SELECT COUNT(DISTINCT from_address) FROM bank_sends`).Scan(&uniqueSenders)
-	a.db.db.QueryRow(`SELECT COUNT(DISTINCT to_address) FROM bank_sends`).Scan(&uniqueReceivers)
-	a.db.db.QueryRow(`SELECT COALESCE(SUM(CAST(REPLACE(REPLACE(amount, 'ugnot', ''), '"', '') AS INTEGER)), 0) FROM bank_sends`).Scan(&totalVolume)
-
-	// Top senders
-	var topSenders []AddrStat
-	rows, _ := a.db.db.Query(`SELECT from_address, COUNT(*) as c, COALESCE(SUM(CAST(REPLACE(REPLACE(amount, 'ugnot', ''), '"', '') AS INTEGER)), 0) as total FROM bank_sends GROUP BY from_address ORDER BY c DESC LIMIT 10`)
-	if rows != nil {
-		defer rows.Close()
-		for rows.Next() {
-			var s AddrStat
-			rows.Scan(&s.Address, &s.Count, &s.Total)
-			topSenders = append(topSenders, s)
-		}
-	}
-
-	// Top receivers by volume
-	var topReceivers []AddrStat
-	rows2, _ := a.db.db.Query(`SELECT to_address, COUNT(*) as c, COALESCE(SUM(CAST(REPLACE(REPLACE(amount, 'ugnot', ''), '"', '') AS INTEGER)), 0) as total FROM bank_sends GROUP BY to_address ORDER BY total DESC LIMIT 10`)
-	if rows2 != nil {
-		defer rows2.Close()
-		for rows2.Next() {
-			var s AddrStat
-			rows2.Scan(&s.Address, &s.Count, &s.Total)
-			topReceivers = append(topReceivers, s)
-		}
-	}
-
-	// Top receivers by count
-	var topReceiversByCount []AddrStat
-	rows3, _ := a.db.db.Query(`SELECT to_address, COUNT(*) as c, COALESCE(SUM(CAST(REPLACE(REPLACE(amount, 'ugnot', ''), '"', '') AS INTEGER)), 0) as total FROM bank_sends GROUP BY to_address ORDER BY c DESC LIMIT 10`)
-	if rows3 != nil {
-		defer rows3.Close()
-		for rows3.Next() {
-			var s AddrStat
-			rows3.Scan(&s.Address, &s.Count, &s.Total)
-			topReceiversByCount = append(topReceiversByCount, s)
-		}
-	}
-
-	uniqueAddrs := 0
-	a.db.db.QueryRow(`SELECT COUNT(DISTINCT addr) FROM (SELECT from_address as addr FROM bank_sends UNION SELECT to_address FROM bank_sends)`).Scan(&uniqueAddrs)
-
-	jsonResponse(w, map[string]any{
-		"total_sends":            totalSends,
-		"unique_senders":         uniqueSenders,
-		"unique_receivers":       uniqueReceivers,
-		"unique_addresses":       uniqueAddrs,
-		"total_volume":           totalVolume,
-		"top_senders":            topSenders,
-		"top_receivers_volume":   topReceivers,
-		"top_receivers_count":    topReceiversByCount,
-	})
+	jsonResponse(w, stats)
 }
 
 func (a *API) HandleGovDAO(w http.ResponseWriter, r *http.Request) {
@@ -587,30 +529,15 @@ func (a *API) HandleGas(w http.ResponseWriter, r *http.Request) {
 	for _, rg := range realmMap {
 		topRealms = append(topRealms, *rg)
 	}
-	// Sort descending by gas
-	for i := 0; i < len(topRealms); i++ {
-		for j := i + 1; j < len(topRealms); j++ {
-			if topRealms[j].Gas > topRealms[i].Gas {
-				topRealms[i], topRealms[j] = topRealms[j], topRealms[i]
-			}
-		}
-	}
+	sort.Slice(topRealms, func(i, j int) bool { return topRealms[i].Gas > topRealms[j].Gas })
 	if len(topRealms) > 20 {
 		topRealms = topRealms[:20]
 	}
 
 	// Top txs by gas
-	// Sort txs copy by gas_used desc
-	type byGas []Transaction
 	sorted := make([]Transaction, len(txs))
 	copy(sorted, txs)
-	for i := 0; i < len(sorted); i++ {
-		for j := i + 1; j < len(sorted); j++ {
-			if sorted[j].GasUsed > sorted[i].GasUsed {
-				sorted[i], sorted[j] = sorted[j], sorted[i]
-			}
-		}
-	}
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].GasUsed > sorted[j].GasUsed })
 	var topTxs []TopTx
 	for _, tx := range sorted {
 		if len(topTxs) >= 20 {
@@ -651,14 +578,8 @@ func (a *API) HandleGas(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	// Storage totals from DB
-	var totalStorageBytes int
-	a.db.db.QueryRow(`SELECT COALESCE(SUM(bytes_delta), 0) FROM (
-		SELECT bytes_delta FROM package_files pf
-		JOIN packages p ON p.path = pf.package_path
-	)`).Scan(&totalStorageBytes)
-	// Approximate: count total source bytes
-	a.db.db.QueryRow(`SELECT COALESCE(SUM(LENGTH(body)), 0) FROM package_files`).Scan(&totalStorageBytes)
+	// Total source bytes from DB
+	totalStorageBytes := a.db.TotalSourceBytes()
 
 	avgGasPerTx := 0
 	if len(txs) > 0 {

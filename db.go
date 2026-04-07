@@ -20,10 +20,14 @@ func NewDB(path string) (*DB, error) {
 		return nil, err
 	}
 
-	// Drop old tables without unique constraints (it's just a cache, rebuilds fast)
-	db.Exec(`DROP TABLE IF EXISTS calls`)
-	db.Exec(`DROP TABLE IF EXISTS msg_runs`)
-	db.Exec(`DROP TABLE IF EXISTS bank_sends`)
+	// Migrate: drop tables if they lack UNIQUE constraints (old schema)
+	var callSQL string
+	db.QueryRow(`SELECT sql FROM sqlite_master WHERE type='table' AND name='calls'`).Scan(&callSQL)
+	if callSQL != "" && !strings.Contains(callSQL, "UNIQUE") {
+		db.Exec(`DROP TABLE IF EXISTS calls`)
+		db.Exec(`DROP TABLE IF EXISTS msg_runs`)
+		db.Exec(`DROP TABLE IF EXISTS bank_sends`)
+	}
 
 	if err := initSchema(db); err != nil {
 		db.Close()
@@ -563,9 +567,10 @@ func (d *DB) GetTokenPackages() ([]TokenInfo, error) {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 	rows, err := d.db.Query(`
-		SELECT DISTINCT p.path, p.name, p.creator
+		SELECT DISTINCT p.path, p.name, p.creator, COALESCE(c.cnt, 0)
 		FROM packages p
 		JOIN dependencies dep ON dep.package_path = p.path
+		LEFT JOIN (SELECT pkg_path, COUNT(*) as cnt FROM calls GROUP BY pkg_path) c ON c.pkg_path = p.path
 		WHERE dep.import_path LIKE '%grc20%'
 		ORDER BY p.block_height DESC
 	`)
@@ -576,10 +581,9 @@ func (d *DB) GetTokenPackages() ([]TokenInfo, error) {
 	var tokens []TokenInfo
 	for rows.Next() {
 		var t TokenInfo
-		if err := rows.Scan(&t.Path, &t.Name, &t.Creator); err != nil {
+		if err := rows.Scan(&t.Path, &t.Name, &t.Creator, &t.CallCount); err != nil {
 			return nil, err
 		}
-		d.db.QueryRow(`SELECT COUNT(*) FROM calls WHERE pkg_path = ?`, t.Path).Scan(&t.CallCount)
 		tokens = append(tokens, t)
 	}
 	return tokens, rows.Err()
@@ -626,4 +630,66 @@ func (d *DB) GetActiveAccounts() ([]AccountInfo, error) {
 		accounts = append(accounts, a)
 	}
 	return accounts, rows.Err()
+}
+
+func (d *DB) TotalSourceBytes() int {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	var n int
+	d.db.QueryRow(`SELECT COALESCE(SUM(LENGTH(body)), 0) FROM package_files`).Scan(&n)
+	return n
+}
+
+type AddrStat struct {
+	Address string `json:"address"`
+	Count   int    `json:"count"`
+	Total   int64  `json:"total"`
+}
+
+type BankStats struct {
+	TotalSends       int        `json:"total_sends"`
+	UniqueSenders    int        `json:"unique_senders"`
+	UniqueReceivers  int        `json:"unique_receivers"`
+	UniqueAddresses  int        `json:"unique_addresses"`
+	TotalVolume      int64      `json:"total_volume"`
+	TopSenders       []AddrStat `json:"top_senders"`
+	TopReceiversVol  []AddrStat `json:"top_receivers_volume"`
+	TopReceiversCnt  []AddrStat `json:"top_receivers_count"`
+}
+
+const amountExpr = `COALESCE(SUM(CAST(REPLACE(REPLACE(amount, 'ugnot', ''), '"', '') AS INTEGER)), 0)`
+
+func (d *DB) GetBankStats() (*BankStats, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	var s BankStats
+	d.db.QueryRow(`SELECT COUNT(*) FROM bank_sends`).Scan(&s.TotalSends)
+	d.db.QueryRow(`SELECT COUNT(DISTINCT from_address) FROM bank_sends`).Scan(&s.UniqueSenders)
+	d.db.QueryRow(`SELECT COUNT(DISTINCT to_address) FROM bank_sends`).Scan(&s.UniqueReceivers)
+	d.db.QueryRow(`SELECT ` + amountExpr + ` FROM bank_sends`).Scan(&s.TotalVolume)
+	d.db.QueryRow(`SELECT COUNT(DISTINCT addr) FROM (SELECT from_address as addr FROM bank_sends UNION SELECT to_address FROM bank_sends)`).Scan(&s.UniqueAddresses)
+
+	s.TopSenders = d.queryAddrStats(`SELECT from_address, COUNT(*), ` + amountExpr + ` FROM bank_sends GROUP BY from_address ORDER BY COUNT(*) DESC LIMIT 10`)
+	s.TopReceiversVol = d.queryAddrStats(`SELECT to_address, COUNT(*), ` + amountExpr + ` FROM bank_sends GROUP BY to_address ORDER BY ` + amountExpr + ` DESC LIMIT 10`)
+	s.TopReceiversCnt = d.queryAddrStats(`SELECT to_address, COUNT(*), ` + amountExpr + ` FROM bank_sends GROUP BY to_address ORDER BY COUNT(*) DESC LIMIT 10`)
+
+	return &s, nil
+}
+
+func (d *DB) queryAddrStats(query string) []AddrStat {
+	rows, err := d.db.Query(query)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	var result []AddrStat
+	for rows.Next() {
+		var s AddrStat
+		if err := rows.Scan(&s.Address, &s.Count, &s.Total); err != nil {
+			continue
+		}
+		result = append(result, s)
+	}
+	return result
 }
