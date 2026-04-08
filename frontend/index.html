@@ -99,6 +99,15 @@ footer { border-top: 1px solid var(--border); padding: 16px 0; margin-top: 40px;
 footer .container { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; }
 footer a { color: var(--fg2); }
 footer a:hover { color: var(--accent); }
+/* Live mode */
+.live-btn { background: var(--bg2); border: 1px solid var(--border); color: var(--fg2); padding: 4px 10px; border-radius: 4px; font-family: var(--mono); font-size: 12px; cursor: pointer; display: flex; align-items: center; gap: 6px; }
+.live-btn:hover { border-color: var(--accent); }
+.live-btn.active { border-color: var(--green); color: var(--green); }
+.live-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--fg2); }
+.live-btn.active .live-dot { background: var(--green); animation: livepulse 1s ease-in-out infinite; }
+@keyframes livepulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+.live-new { animation: livefade 0.5s ease-out; }
+@keyframes livefade { from { background: rgba(78, 205, 196, 0.2); } to { background: transparent; } }
 /* Highlight on hover (addresses, tx hashes, event types, etc) */
 [data-hl].hl-active { outline: 2px solid #4ecdc4; outline-offset: 1px; background: rgba(78, 205, 196, 0.15); border-radius: 2px; }
 @media (max-width: 768px) { .stats-bar { gap: 12px; } .stat .value { font-size: 16px; } .search-box input { width: 160px; } nav { gap: 8px; } }
@@ -125,6 +134,7 @@ footer a:hover { color: var(--accent); }
       <input type="text" id="search-input" placeholder="search...">
       <div id="search-results"></div>
     </div>
+    <button class="live-btn" id="live-toggle" onclick="toggleLive()"><span class="live-dot"></span> live</button>
   </div>
 </header>
 <div class="container">
@@ -1959,6 +1969,142 @@ api('version').then(v => {
   el.textContent = v.git_hash;
   el.href = 'https://github.com/moul/mygnoscan/commit/' + v.git_hash;
 }).catch(() => {});
+
+// --- Live mode (WebSocket subscription to tx-indexer) ---
+let _liveWs = null;
+let _liveActive = false;
+let _liveTxCount = 0;
+let _liveBlockCount = 0;
+
+function toggleLive() {
+  _liveActive = !_liveActive;
+  const btn = document.getElementById('live-toggle');
+  if (_liveActive) {
+    btn.classList.add('active');
+    startLive();
+  } else {
+    btn.classList.remove('active');
+    stopLive();
+  }
+}
+
+function startLive() {
+  stopLive();
+  _liveTxCount = 0;
+  _liveBlockCount = 0;
+
+  try {
+    _liveWs = new WebSocket('wss://indexer.gno.land/graphql/query', 'graphql-transport-ws');
+  } catch (e) { console.error('live: ws create failed', e); return; }
+
+  _liveWs.onopen = () => {
+    _liveWs.send(JSON.stringify({ type: 'connection_init' }));
+  };
+
+  _liveWs.onmessage = (evt) => {
+    const msg = JSON.parse(evt.data);
+    if (msg.type === 'connection_ack') {
+      // Subscribe to transactions
+      _liveWs.send(JSON.stringify({
+        id: 'live-tx',
+        type: 'subscribe',
+        payload: {
+          query: 'subscription { getTransactions(where: {}) { hash block_height success gas_used gas_fee { amount denom } messages { typeUrl route value { __typename ... on MsgCall { caller pkg_path func } ... on MsgAddPackage { creator package { name path } } ... on MsgRun { caller } ... on BankMsgSend { from_address to_address amount } } } } }'
+        }
+      }));
+      // Subscribe to blocks
+      _liveWs.send(JSON.stringify({
+        id: 'live-block',
+        type: 'subscribe',
+        payload: {
+          query: 'subscription { getBlocks(where: {}) { height time num_txs proposer_address_raw } }'
+        }
+      }));
+    } else if (msg.type === 'next') {
+      if (msg.id === 'live-tx' && msg.payload?.data?.getTransactions) {
+        onLiveTx(msg.payload.data.getTransactions);
+      } else if (msg.id === 'live-block' && msg.payload?.data?.getBlocks) {
+        onLiveBlock(msg.payload.data.getBlocks);
+      }
+    }
+  };
+
+  _liveWs.onerror = (e) => { console.error('live: ws error', e); };
+  _liveWs.onclose = () => {
+    if (_liveActive) {
+      // Reconnect after 3s
+      setTimeout(() => { if (_liveActive) startLive(); }, 3000);
+    }
+  };
+}
+
+function stopLive() {
+  if (_liveWs) {
+    _liveWs.close();
+    _liveWs = null;
+  }
+}
+
+function onLiveTx(tx) {
+  _liveTxCount++;
+  // Update block height in home stats
+  const blockEl = document.getElementById('stat-block');
+  if (blockEl && tx.block_height > 0) blockEl.textContent = fmtNum(tx.block_height);
+
+  // Prepend to home recent-txs if on home page
+  const tbody = document.getElementById('recent-txs');
+  if (tbody && document.getElementById('view-home')?.classList.contains('active')) {
+    const msg = tx.messages?.[0];
+    const tr = el('tr', { className: 'live-new' },
+      el('td', {}, blockLink(tx.block_height)),
+      el('td', {}, typeBadge(msg?.value?.__typename)),
+      el('td', {}, txDetailEl(msg)),
+      el('td', {}, statusBadge(tx.success)),
+      el('td', { style: { color: 'var(--fg2)', fontSize: '12px' } }, 'just now')
+    );
+    tbody.insertBefore(tr, tbody.firstChild);
+    // Keep max 30 rows
+    while (tbody.children.length > 30) tbody.removeChild(tbody.lastChild);
+  }
+
+  // Prepend to txs page if active
+  const txsList = document.getElementById('txs-list');
+  if (txsList && document.getElementById('view-txs')?.classList.contains('active')) {
+    const msg = tx.messages?.[0];
+    const tr = el('tr', { className: 'live-new' },
+      el('td', {}, txLink(tx.hash, tx.block_height)),
+      el('td', {}, blockLink(tx.block_height)),
+      el('td', {}, typeBadge(msg?.value?.__typename)),
+      el('td', {}, txDetailEl(msg)),
+      el('td', {}, statusBadge(tx.success))
+    );
+    txsList.insertBefore(tr, txsList.firstChild);
+    while (txsList.children.length > 60) txsList.removeChild(txsList.lastChild);
+  }
+
+  // Update live counter in button
+  document.getElementById('live-toggle').title = _liveTxCount + ' txs, ' + _liveBlockCount + ' blocks received';
+}
+
+function onLiveBlock(block) {
+  _liveBlockCount++;
+  const blockEl = document.getElementById('stat-block');
+  if (blockEl) blockEl.textContent = fmtNum(block.height);
+
+  // Prepend to blocks page if active
+  const blocksList = document.getElementById('blocks-list');
+  if (blocksList && document.getElementById('view-blocks')?.classList.contains('active')) {
+    const tr = el('tr', { className: 'live-new' },
+      el('td', {}, blockLink(block.height)),
+      el('td', {}, 'just now'),
+      el('td', {}, String(block.num_txs)),
+      el('td', { className: 'truncate' }, addrLink(block.proposer_address_raw)),
+      el('td', { className: 'truncate' }, '-')
+    );
+    blocksList.insertBefore(tr, blocksList.firstChild);
+    while (blocksList.children.length > 60) blocksList.removeChild(blocksList.lastChild);
+  }
+}
 
 // --- Routing ---
 window.addEventListener('popstate', route);
