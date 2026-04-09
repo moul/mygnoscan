@@ -103,8 +103,12 @@ footer a:hover { color: var(--accent); }
 .live-btn { background: var(--bg2); border: 1px solid var(--border); color: var(--fg2); padding: 4px 10px; border-radius: 4px; font-family: var(--mono); font-size: 12px; cursor: pointer; display: flex; align-items: center; gap: 6px; }
 .live-btn:hover { border-color: var(--accent); }
 .live-btn.active { border-color: var(--green); color: var(--green); }
+.live-btn.connecting { border-color: var(--accent); color: var(--accent); }
+.live-btn.error { border-color: #e74c3c; color: #e74c3c; }
 .live-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--fg2); }
 .live-btn.active .live-dot { background: var(--green); animation: livepulse 1s ease-in-out infinite; }
+.live-btn.connecting .live-dot { background: var(--accent); animation: livepulse 0.5s ease-in-out infinite; }
+.live-btn.error .live-dot { background: #e74c3c; }
 @keyframes livepulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
 .live-new { animation: livefade 0.5s ease-out; }
 @keyframes livefade { from { background: rgba(78, 205, 196, 0.2); } to { background: transparent; } }
@@ -134,7 +138,7 @@ footer a:hover { color: var(--accent); }
       <input type="text" id="search-input" placeholder="search...">
       <div id="search-results"></div>
     </div>
-    <button class="live-btn" id="live-toggle" onclick="toggleLive()"><span class="live-dot"></span> live</button>
+    <button class="live-btn" id="live-toggle" onclick="toggleLive()"><span class="live-dot"></span><span id="live-label"> live</span></button>
   </div>
 </header>
 <div class="container">
@@ -1976,14 +1980,23 @@ let _liveActive = false;
 let _liveTxCount = 0;
 let _liveBlockCount = 0;
 
+function setLiveState(state) { // 'off' | 'connecting' | 'active' | 'error'
+  const btn = document.getElementById('live-toggle');
+  const label = document.getElementById('live-label');
+  btn.classList.remove('active', 'connecting', 'error');
+  if (state === 'active') { btn.classList.add('active'); if (label) label.textContent = ' live'; }
+  else if (state === 'connecting') { btn.classList.add('connecting'); if (label) label.textContent = ' connecting…'; }
+  else if (state === 'error') { btn.classList.add('error'); if (label) label.textContent = ' error'; }
+  else { if (label) label.textContent = ' live'; }
+}
+
 function toggleLive() {
   _liveActive = !_liveActive;
-  const btn = document.getElementById('live-toggle');
   if (_liveActive) {
-    btn.classList.add('active');
+    setLiveState('connecting');
     startLive();
   } else {
-    btn.classList.remove('active');
+    setLiveState('off');
     stopLive();
   }
 }
@@ -2004,35 +2017,35 @@ function startLive() {
   _liveWs.onmessage = (evt) => {
     const msg = JSON.parse(evt.data);
     if (msg.type === 'connection_ack') {
-      // Subscribe to transactions
+      setLiveState('active');
+      const subType = 'subscribe'; // graphql-transport-ws
       _liveWs.send(JSON.stringify({
-        id: 'live-tx',
-        type: 'subscribe',
-        payload: {
-          query: 'subscription { getTransactions(where: {}) { hash block_height success gas_used gas_fee { amount denom } messages { typeUrl route value { __typename ... on MsgCall { caller pkg_path func } ... on MsgAddPackage { creator package { name path } } ... on MsgRun { caller } ... on BankMsgSend { from_address to_address amount } } } } }'
-        }
+        id: 'live-tx', type: subType,
+        payload: { query: 'subscription { getTransactions(where: {}) { hash block_height success gas_used gas_fee { amount denom } messages { typeUrl route value { __typename ... on MsgCall { caller pkg_path func } ... on MsgAddPackage { creator package { name path } } ... on MsgRun { caller } ... on BankMsgSend { from_address to_address amount } } } } }' }
       }));
-      // Subscribe to blocks
       _liveWs.send(JSON.stringify({
-        id: 'live-block',
-        type: 'subscribe',
-        payload: {
-          query: 'subscription { getBlocks(where: {}) { height time num_txs proposer_address_raw } }'
-        }
+        id: 'live-block', type: subType,
+        payload: { query: 'subscription { getBlocks(where: {}) { height time num_txs proposer_address_raw } }' }
       }));
-    } else if (msg.type === 'next') {
+    } else if (msg.type === 'next' || msg.type === 'data') {
+      // 'next' = graphql-transport-ws, 'data' = legacy graphql-ws
       if (msg.id === 'live-tx' && msg.payload?.data?.getTransactions) {
         onLiveTx(msg.payload.data.getTransactions);
       } else if (msg.id === 'live-block' && msg.payload?.data?.getBlocks) {
         onLiveBlock(msg.payload.data.getBlocks);
       }
+    } else if (msg.type === 'ping') {
+      _liveWs.send(JSON.stringify({ type: 'pong' }));
     }
   };
 
-  _liveWs.onerror = (e) => { console.error('live: ws error', e); };
+  _liveWs.onerror = (e) => {
+    console.error('live: ws error', e);
+    setLiveState('error');
+  };
   _liveWs.onclose = () => {
     if (_liveActive) {
-      // Reconnect after 3s
+      setLiveState('connecting');
       setTimeout(() => { if (_liveActive) startLive(); }, 3000);
     }
   };
@@ -2045,11 +2058,31 @@ function stopLive() {
   }
 }
 
+function liveIncrStat(id) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  const n = parseInt(el.textContent.replace(/,/g, ''), 10);
+  if (!isNaN(n)) {
+    el.textContent = fmtNum(n + 1);
+    el.classList.remove('live-new');
+    void el.offsetWidth; // reflow to restart animation
+    el.classList.add('live-new');
+  }
+}
+
 function onLiveTx(tx) {
   _liveTxCount++;
   // Update block height in home stats
   const blockEl = document.getElementById('stat-block');
   if (blockEl && tx.block_height > 0) blockEl.textContent = fmtNum(tx.block_height);
+
+  // Increment stat counters
+  liveIncrStat('stat-txs');
+  const typename = tx.messages?.[0]?.value?.__typename;
+  if (typename === 'MsgCall') liveIncrStat('stat-calls');
+  else if (typename === 'MsgAddPackage') liveIncrStat('stat-deploys');
+  else if (typename === 'MsgRun') liveIncrStat('stat-runs');
+  else if (typename === 'BankMsgSend') liveIncrStat('stat-sends');
 
   // Prepend to home recent-txs if on home page
   const tbody = document.getElementById('recent-txs');
@@ -2082,8 +2115,9 @@ function onLiveTx(tx) {
     while (txsList.children.length > 60) txsList.removeChild(txsList.lastChild);
   }
 
-  // Update live counter in button
-  document.getElementById('live-toggle').title = _liveTxCount + ' txs, ' + _liveBlockCount + ' blocks received';
+  // Update live counter in button label
+  const lbl = document.getElementById('live-label');
+  if (lbl) lbl.textContent = ' +' + _liveTxCount + 'tx ' + _liveBlockCount + 'blk';
 }
 
 function onLiveBlock(block) {
