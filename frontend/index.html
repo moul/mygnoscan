@@ -1828,8 +1828,14 @@ function truncatedText(text) {
   const wrap = el('div', { className: 'clamp-wrap' });
   const content = el('div', { className: 'clamp-text' }, text);
   wrap.appendChild(content);
-  // After render, check if actually clamped and add toggle
-  requestAnimationFrame(() => {
+  // Defer clamp check — element may not be in DOM yet
+  _clampQueue.push({ wrap, content });
+  return wrap;
+}
+const _clampQueue = [];
+function processClampQueue() {
+  while (_clampQueue.length) {
+    const { wrap, content } = _clampQueue.shift();
     if (content.scrollHeight > content.clientHeight + 2) {
       const btn = el('span', { className: 'clamp-toggle' }, '[show]');
       btn.addEventListener('click', () => {
@@ -1838,9 +1844,11 @@ function truncatedText(text) {
       });
       wrap.appendChild(btn);
     }
-  });
-  return wrap;
+  }
 }
+// Run after every DOM update settles
+const _clampObserver = new MutationObserver(() => { if (_clampQueue.length) setTimeout(processClampQueue, 0); });
+_clampObserver.observe(document.body, { childList: true, subtree: true });
 
 function argValueEl(val) {
   if (/^g1[a-z0-9]{38,}$/.test(val)) return addrLink(val);
