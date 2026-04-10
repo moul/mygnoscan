@@ -1550,18 +1550,13 @@ async function loadTxDetail(hash) {
     sr.appendChild(el('td', {}, statusBadge(tx.success))); tbl.appendChild(sr);
     if (tx.response?.error) tbl.appendChild(el('tr', {}, el('td', { style: { color: 'var(--fg2)' } }, 'error'), el('td', { style: { color: 'var(--red)' } }, tx.response.error)));
     container.appendChild(tbl);
-    // Parse log into per-message entries: "msg:0,success:true,log:X,events:[];msg:1,..."
+    // Parse log into per-message entries: "msg:0,success:true,log:X,events:[]" (newline or semicolon separated)
     const msgLogs = {};
-    for (const part of (tx.response?.log || '').split(';').map(s => s.trim()).filter(Boolean)) {
-      const kvs = {};
-      let rest = part;
-      // parse key:value pairs carefully (log value may contain colons)
-      for (const k of ['msg', 'success', 'log', 'events']) {
-        const re = new RegExp('(?:^|,)' + k + ':([^,]*)');
-        const m = rest.match(re); if (m) kvs[k] = m[1];
-      }
-      const idx = parseInt(kvs.msg ?? '-1', 10);
-      if (idx >= 0) msgLogs[idx] = { success: kvs.success, log: kvs.log || '' };
+    for (const part of (tx.response?.log || '').split(/[;\n]/).map(s => s.trim()).filter(Boolean)) {
+      const mIdx = part.match(/(?:^|,)msg:(\d+)/); if (!mIdx) continue;
+      const mLog = part.match(/,log:([^,]*)/);
+      const logVal = mLog ? mLog[1].trim() : '';
+      if (logVal) msgLogs[parseInt(mIdx[1], 10)] = logVal;
     }
     // Split response.data per message by \n\n
     const msgData = (tx.response?.data || '').split('\n\n').map(s => s.trim()).filter(Boolean);
@@ -1929,9 +1924,9 @@ function renderMessageEl(msg, index, returnData, msgLog) {
   if (returnData) {
     addRow('→ return', el('span', { style: { fontFamily: 'var(--mono)', fontSize: '12px', color: 'var(--accent)', wordBreak: 'break-word' } }, returnData));
   }
-  // Per-message log
-  if (msgLog?.log) {
-    addRow('log', el('span', { style: { fontFamily: 'var(--mono)', fontSize: '12px', color: 'var(--fg2)' } }, msgLog.log));
+  // Per-message log (only shown when non-empty, e.g. on failures)
+  if (msgLog) {
+    addRow('log', el('span', { style: { fontFamily: 'var(--mono)', fontSize: '12px', color: 'var(--fg2)', whiteSpace: 'pre-wrap', wordBreak: 'break-word' } }, msgLog));
   }
   div.appendChild(tbl); return div;
 }
