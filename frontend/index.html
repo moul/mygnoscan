@@ -333,15 +333,25 @@ function skeletonBlock(container) {
 }
 // Raw JSON collapsible
 // Syntax-highlighted code block for .gno files
-function codeBlock(body) {
+function codeBlock(body, fileId) {
   const pre = document.createElement('pre');
-  // Tokenize line by line
   const lines = (body || '').split('\n');
   for (let i = 0; i < lines.length; i++) {
     if (i > 0) pre.appendChild(document.createTextNode('\n'));
-    highlightLine(pre, lines[i]);
+    const lineSpan = el('span');
+    if (fileId) lineSpan.id = fileId + '-L' + (i + 1);
+    highlightLine(lineSpan, lines[i]);
+    pre.appendChild(lineSpan);
   }
   return pre;
+}
+function parseFuncSignature(source, funcName) {
+  // Extract param names from "func FuncName(p1 t, p2, p3 t2) ..."
+  const re = new RegExp('func\\s+' + funcName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\s*\\(([^)]*)\\)');
+  const m = source.match(re);
+  if (!m) return null;
+  const params = m[1].split(',').map(p => p.trim().split(/\s+/)[0]).filter(Boolean);
+  return params; // e.g. ['_', 'slug', 'title', 'body']
 }
 function highlightLine(parent, line) {
   // Comment
@@ -1298,9 +1308,26 @@ async function loadRealmDetail(path, initialTab) {
     // Source
     const src = clear('tab-source'); if (activeTab === 'source') src.classList.add('active'); else src.classList.remove('active');
     for (const f of (detail.files || [])) {
+      const fileId = 'src-' + f.name.replace(/[^a-z0-9]/gi, '-');
       src.appendChild(el('div', { style: { marginBottom: '16px' } },
         el('div', { style: { color: 'var(--accent)', marginBottom: '4px', fontSize: '12px' } }, f.name),
-        codeBlock(f.body)));
+        codeBlock(f.body, fileId)));
+    }
+    // Scroll to function if ?fn= param present
+    const fnParam = new URLSearchParams(window.location.search).get('fn');
+    if (fnParam && activeTab === 'source') {
+      requestAnimationFrame(() => {
+        // Search all line spans for "func FnName("
+        const pattern = 'func ' + fnParam + '(';
+        const all = src.querySelectorAll('span[id]');
+        for (const span of all) {
+          if (span.textContent.includes(pattern)) {
+            span.style.background = 'rgba(78,205,196,0.15)';
+            span.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            break;
+          }
+        }
+      });
     }
     // Calls + MsgRuns merged into one table
     const calls = clear('tab-calls'); if (activeTab === 'calls') calls.classList.add('active'); else calls.classList.remove('active');
@@ -1497,13 +1524,12 @@ async function loadTxDetail(hash) {
     if (storageCount > 0) {
       txStats.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'storage'), el('span', { className: 'value' }, fmtBytes(storageBytes))));
       txStats.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'storage fee'), el('span', { className: 'value' }, fmtUgnot(storageFee, 'ugnot'))));
-      txStats.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'realms touched'), el('span', { className: 'value' }, fmtNum(storagePaths.size))));
     }
     if (unlockCount > 0) {
       txStats.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'unlocked'), el('span', { className: 'value' }, fmtBytes(unlockBytes))));
       txStats.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'refunded'), el('span', { className: 'value' }, fmtUgnot(unlockFee, 'ugnot'))));
     }
-    txStats.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'events'), el('span', { className: 'value' }, fmtNum(events.length))));
+    if (gnoEventCount > 0) txStats.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'events'), el('span', { className: 'value' }, fmtNum(gnoEventCount))));
     container.appendChild(txStats);
     // Info table
     const tbl = el('table');
@@ -1540,60 +1566,83 @@ async function loadTxDetail(hash) {
     }
     if (tx.response?.error) tbl.appendChild(el('tr', {}, el('td', { style: { color: 'var(--fg2)' } }, 'error'), el('td', { style: { color: 'var(--red)' } }, tx.response.error)));
     container.appendChild(tbl);
-    // Realms touched list (after table)
-    if (storagePaths.size > 0) {
-      const rtEl = el('div', { style: { margin: '8px 0 0', fontSize: '13px', color: 'var(--fg2)' } });
-      rtEl.appendChild(el('span', {}, 'realms touched: '));
-      let first = true;
-      for (const p of storagePaths) {
-        if (!first) rtEl.appendChild(document.createTextNode(', '));
-        rtEl.appendChild(realmPathEl(p));
-        first = false;
-      }
-      container.appendChild(rtEl);
-    }
     // Split response.data per message by \n\n
     const msgData = (tx.response?.data || '').split('\n\n').map(s => s.trim()).filter(Boolean);
     container.appendChild(el('div', { className: 'section-title', style: { marginTop: '24px' } }, 'messages (' + (tx.messages?.length || 0) + ')'));
     for (const [i, msg] of (tx.messages || []).entries()) container.appendChild(renderMessageEl(msg, i, msgData[i]));
-    if (tx.response?.events?.length) {
-      container.appendChild(el('div', { className: 'section-title', style: { marginTop: '24px' } }, 'events (' + tx.response.events.length + ')'));
-      for (const ev of tx.response.events) {
+
+    // Storage section (dedicated, separate from events)
+    const storageEvs = events.filter(ev => ev.__typename === 'StorageDepositEvent' || ev.__typename === 'StorageUnlockEvent');
+    if (storageEvs.length > 0) {
+      container.appendChild(el('div', { className: 'section-title', style: { marginTop: '24px' } }, 'storage (' + storageEvs.length + ')'));
+      const stTbl = el('table', { style: { width: '100%' } });
+      stTbl.appendChild(el('thead', {}, el('tr', {},
+        el('th', {}, 'realm'),
+        el('th', { style: { textAlign: 'right' } }, 'before'),
+        el('th', { style: { textAlign: 'right' } }, 'delta'),
+        el('th', { style: { textAlign: 'right' } }, 'after'),
+        el('th', { style: { textAlign: 'right' } }, 'fee')
+      )));
+      const stBody = el('tbody');
+      stTbl.appendChild(stBody);
+      container.appendChild(stTbl);
+
+      // Group by realm path
+      const byPath = {};
+      for (const ev of storageEvs) {
+        const p = ev.pkg_path || '';
+        if (!byPath[p]) byPath[p] = { deposits: [], unlocks: [] };
+        if (ev.__typename === 'StorageDepositEvent') byPath[p].deposits.push(ev);
+        else byPath[p].unlocks.push(ev);
+      }
+      let totalDeltaBytes = 0, totalFeeUgnot = 0;
+      for (const [sPath, evs] of Object.entries(byPath)) {
+        const txDelta = evs.deposits.reduce((s, e) => s + (e.bytes_delta || 0), 0) - evs.unlocks.reduce((s, e) => s + (e.bytes_delta || 0), 0);
+        const txFee = evs.deposits.reduce((s, e) => s + (e.fee_delta?.amount || 0), 0) - evs.unlocks.reduce((s, e) => s + (e.fee_refund?.amount || 0), 0);
+        totalDeltaBytes += txDelta; totalFeeUgnot += txFee;
+        const mono = { fontFamily: 'var(--mono)', fontSize: '12px', textAlign: 'right' };
+        const beforeTd = el('td', { style: { ...mono, color: 'var(--fg2)' } }, '…');
+        const afterTd = el('td', { style: mono }, '…');
+        const realmTd = el('td'); realmTd.appendChild(realmPathEl(sPath));
+        const deltaCol = el('td', { style: { ...mono, color: txDelta >= 0 ? 'var(--green)' : 'var(--red)' } },
+          (txDelta >= 0 ? '+' : '') + fmtNum(txDelta) + ' B' + (Math.abs(txDelta) >= 1024 ? ' (' + (txDelta/1024).toFixed(2) + ' KB)' : ''));
+        stBody.appendChild(el('tr', {}, realmTd, beforeTd, deltaCol, afterTd,
+          el('td', { style: { ...mono, color: 'var(--fg2)' } }, fmtNum(txFee) + ' ugnot')));
+        // Async fetch before/after from storage history
+        const apiPath = sPath.replace('gno.land/', '');
+        api('storage/' + apiPath).then(sd => {
+          let net = 0;
+          for (const e of (sd.storage?.entries || [])) net += e.type === 'deposit' ? e.bytes_delta : -e.bytes_delta;
+          const before = net - txDelta;
+          beforeTd.textContent = fmtNum(before) + ' B';
+          afterTd.textContent = fmtNum(net) + ' B';
+        }).catch(() => { beforeTd.textContent = '?'; afterTd.textContent = '?'; });
+      }
+      // Totals row
+      stBody.appendChild(el('tr', { style: { borderTop: '1px solid var(--border)' } },
+        el('td', { style: { color: 'var(--fg2)', fontWeight: 'bold' } }, 'total'),
+        el('td', {}), el('td', { style: { textAlign: 'right', fontFamily: 'var(--mono)', fontSize: '12px', fontWeight: 'bold', color: totalDeltaBytes >= 0 ? 'var(--green)' : 'var(--red)' } },
+          (totalDeltaBytes >= 0 ? '+' : '') + fmtBytes(totalDeltaBytes)),
+        el('td', {}),
+        el('td', { style: { textAlign: 'right', fontFamily: 'var(--mono)', fontSize: '12px', color: 'var(--fg2)' } }, fmtNum(totalFeeUgnot) + ' ugnot')
+      ));
+    }
+
+    // Events section — GnoEvents only
+    const gnoEvents = events.filter(ev => ev.__typename === 'GnoEvent');
+    if (gnoEvents.length > 0) {
+      container.appendChild(el('div', { className: 'section-title', style: { marginTop: '24px' } }, 'events (' + gnoEvents.length + ')'));
+      for (const ev of gnoEvents) {
         const evEl = el('div', { className: 'card' });
-        const typename = ev.__typename || 'event';
-        if (typename === 'StorageDepositEvent') {
-          const hdr = el('div', { style: { marginBottom: '4px' } });
-          hdr.appendChild(badge('pkg', 'storage deposit'));
-          if (ev.pkg_path) { hdr.append(' '); hdr.appendChild(realmPathEl(ev.pkg_path)); }
-          evEl.appendChild(hdr);
-          const details = el('div', { style: { paddingLeft: '16px', fontSize: '12px', marginTop: '4px' } });
-          if (ev.bytes_delta) details.appendChild(el('div', {}, el('span', { style: { color: 'var(--fg2)' } }, 'bytes: '), fmtBytes(ev.bytes_delta)));
-          if (ev.fee_delta) details.appendChild(el('div', {}, el('span', { style: { color: 'var(--fg2)' } }, 'fee locked: '), fmtUgnot(ev.fee_delta.amount, ev.fee_delta.denom)));
-          evEl.appendChild(details);
-        } else if (typename === 'StorageUnlockEvent') {
-          const hdr = el('div', { style: { marginBottom: '4px' } });
-          hdr.appendChild(badge('ok', 'storage unlock'));
-          if (ev.pkg_path) { hdr.append(' '); hdr.appendChild(realmPathEl(ev.pkg_path)); }
-          evEl.appendChild(hdr);
-          const details = el('div', { style: { paddingLeft: '16px', fontSize: '12px', marginTop: '4px' } });
-          if (ev.bytes_delta) details.appendChild(el('div', {}, el('span', { style: { color: 'var(--fg2)' } }, 'bytes: '), fmtBytes(ev.bytes_delta)));
-          if (ev.fee_refund) details.appendChild(el('div', {}, el('span', { style: { color: 'var(--fg2)' } }, 'fee refunded: '), fmtUgnot(ev.fee_refund.amount, ev.fee_refund.denom)));
-          evEl.appendChild(details);
-        } else {
-          // GnoEvent: realmPath.EventType header, linkified attrs
-          const hdr = el('div', { style: { marginBottom: '4px' } });
-          if (ev.pkg_path) {
-            hdr.appendChild(realmPathEl(ev.pkg_path));
-            hdr.append('.');
-          }
-          hdr.appendChild(el('span', { className: 'badge badge-realm', style: { background: 'rgba(78,205,196,0.15)', border: '1px solid rgba(78,205,196,0.4)', color: 'var(--accent)' } }, ev.type || typename));
-          evEl.appendChild(hdr);
-          for (const a of (ev.attrs || [])) {
-            const ae = el('div', { style: { paddingLeft: '16px', fontSize: '12px' } });
-            ae.appendChild(el('span', { style: { color: 'var(--fg2)' } }, a.key + ': '));
-            ae.appendChild(linkify(a.value));
-            evEl.appendChild(ae);
-          }
+        const hdr = el('div', { style: { marginBottom: '4px' } });
+        if (ev.pkg_path) { hdr.appendChild(realmPathEl(ev.pkg_path)); hdr.append('.'); }
+        hdr.appendChild(el('span', { className: 'badge badge-realm', style: { background: 'rgba(78,205,196,0.15)', border: '1px solid rgba(78,205,196,0.4)', color: 'var(--accent)' } }, ev.type || ev.__typename));
+        evEl.appendChild(hdr);
+        for (const a of (ev.attrs || [])) {
+          const ae = el('div', { style: { paddingLeft: '16px', fontSize: '12px' } });
+          ae.appendChild(el('span', { style: { color: 'var(--fg2)' } }, a.key + ': '));
+          ae.appendChild(linkify(a.value));
+          evEl.appendChild(ae);
         }
         container.appendChild(evEl);
       }
@@ -1820,19 +1869,36 @@ function renderMessageEl(msg, index, returnData) {
     case 'MsgCall': {
       addRow('caller', addrLink(v.caller));
       addRow('realm', realmPathEl(v.pkg_path));
-      // Function name as link to source tab
+      // Function name as link to source tab (scrolls to function)
       const fnEl = el('span');
-      fnEl.appendChild(link(v.func, () => navigate('/realm/' + v.pkg_path.replace('gno.land/', '') + '?tab=source')));
+      const fnPath = v.pkg_path.replace('gno.land/', '');
+      fnEl.appendChild(link(v.func, () => navigate('/realm/' + fnPath + '?tab=source&fn=' + encodeURIComponent(v.func))));
       addRow('function', fnEl);
-      // Args as individual numbered rows
+      // Args — rendered with numbered labels first, then upgraded with param names async
       const args = v.args || [];
+      const argLabels = args.map((_, i) => { const td = el('td', { style: { color: 'var(--fg2)', whiteSpace: 'nowrap', paddingRight: '12px', verticalAlign: 'top' } }, 'arg[' + i + ']'); return td; });
       if (args.length === 0) {
         addRow('args', '-');
       } else {
         for (let i = 0; i < args.length; i++) {
-          addRow('arg[' + i + ']', argValueEl(args[i]));
+          const tr = el('tr', {}, argLabels[i]);
+          const td = el('td', { style: { wordBreak: 'break-word', maxWidth: '0', width: '100%' } });
+          td.appendChild(argValueEl(args[i]));
+          tr.appendChild(td);
+          tbl.appendChild(tr);
         }
       }
+      // Async: fetch realm source to get param names
+      api('realm/' + fnPath).then(rd => {
+        const allSource = (rd.files || []).map(f => f.body || '').join('\n');
+        const params = parseFuncSignature(allSource, v.func);
+        if (params) {
+          for (let i = 0; i < argLabels.length; i++) {
+            const name = params[i] || ('arg[' + i + ']');
+            argLabels[i].textContent = name === '_' ? ('arg[' + i + ']') : name;
+          }
+        }
+      }).catch(() => {});
       break;
     }
     case 'MsgRun':
