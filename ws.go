@@ -85,17 +85,19 @@ func (f *liveFeed) connectLoop() {
 }
 
 func (f *liveFeed) subscribe() error {
-	wsURL := strings.Replace(feed.indexerURL, "https://", "wss://", 1)
+	wsURL := strings.Replace(f.indexerURL, "https://", "wss://", 1)
 	wsURL = strings.Replace(wsURL, "http://", "ws://", 1)
 
+	log.Printf("live feed: connecting to %s", wsURL)
 	dialer := websocket.Dialer{
 		HandshakeTimeout: 10 * time.Second,
 		Subprotocols:     []string{"graphql-transport-ws"},
 	}
 	conn, _, err := dialer.Dial(wsURL, nil)
 	if err != nil {
-		return fmt.Errorf("dial: %w", err)
+		return fmt.Errorf("dial %s: %w", wsURL, err)
 	}
+	log.Printf("live feed: connected")
 	defer conn.Close()
 
 	// Init
