@@ -111,7 +111,7 @@ func run() error {
 	mux.HandleFunc("GET /api/govdao", api.HandleGovDAO)
 
 	// WebSocket proxy to tx-indexer (browser can't connect directly due to CDN)
-	mux.HandleFunc("/ws", wsProxyHandler(*indexerURL))
+	mux.HandleFunc("GET /ws", wsProxyHandler(*indexerURL))
 
 	// Frontend: SPA handler serves index.html for all non-API routes
 	frontendSub, err := fs.Sub(frontendFS, "frontend")
