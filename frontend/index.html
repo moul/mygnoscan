@@ -2201,8 +2201,11 @@ function tryConnect(protocols) {
   const proto = protocols[0];
   console.log('live: trying', proto);
 
+  // Connect to our own WS proxy (which relays to tx-indexer)
+  const wsProto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const wsUrl = wsProto + '//' + location.host + '/ws';
   try {
-    _liveWs = new WebSocket('wss://indexer.gno.land/graphql/query', proto);
+    _liveWs = new WebSocket(wsUrl, proto);
   } catch (e) {
     console.error('live: ws create failed for', proto, e);
     tryConnect(protocols.slice(1));
