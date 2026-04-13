@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -35,28 +36,40 @@ func jsonError(w http.ResponseWriter, msg string, code int) {
 	json.NewEncoder(w).Encode(map[string]string{"error": msg})
 }
 
-// stampPackageTimes fetches block times for packages and fills BlockTime.
+// stampPackageTimes fetches block times for each unique block height in parallel.
 func stampPackageTimes(ctx context.Context, client *IndexerClient, pkgs []PackageInfo) {
 	if len(pkgs) == 0 {
 		return
 	}
-	minH, maxH := pkgs[0].BlockHeight, pkgs[0].BlockHeight
+	// Collect unique heights
+	seen := make(map[int]bool)
+	var heights []int
 	for _, p := range pkgs {
-		if p.BlockHeight < minH {
-			minH = p.BlockHeight
-		}
-		if p.BlockHeight > maxH {
-			maxH = p.BlockHeight
+		if !seen[p.BlockHeight] {
+			seen[p.BlockHeight] = true
+			heights = append(heights, p.BlockHeight)
 		}
 	}
-	blocks, err := client.GetBlocksInRange(ctx, minH, maxH)
-	if err != nil {
-		return
+	// Fetch block times in parallel (max 5 concurrent)
+	bt := make(map[int]string, len(heights))
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, 5)
+	for _, h := range heights {
+		wg.Add(1)
+		go func(height int) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			block, err := client.GetBlock(ctx, height)
+			if err == nil && block != nil {
+				mu.Lock()
+				bt[height] = block.Time
+				mu.Unlock()
+			}
+		}(h)
 	}
-	bt := make(map[int]string, len(blocks))
-	for _, b := range blocks {
-		bt[b.Height] = b.Time
-	}
+	wg.Wait()
 	for i := range pkgs {
 		pkgs[i].BlockTime = bt[pkgs[i].BlockHeight]
 	}
