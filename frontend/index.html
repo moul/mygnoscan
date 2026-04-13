@@ -541,6 +541,7 @@ function netBadgeEl(networkId) {
   const span = document.createElement('span');
   span.className = 'net-badge net-' + networkId;
   span.textContent = networkId;
+  span.setAttribute('data-hl', 'net:' + networkId);
   return span;
 }
 function netSuffix(n) {
@@ -883,7 +884,7 @@ function renderBlockRows() {
     tbody.appendChild(el('tr', {},
       el('td', {}, blockLink(b.height, b.network)),
       el('td', {}, timeAgo(b.time)),
-      el('td', {}, String(b.num_txs)),
+      el('td', { style: b.num_txs === 0 ? { color: 'var(--fg2)' } : {} }, String(b.num_txs)),
       el('td', { className: 'truncate' }, addrLink(b.proposer_address_raw)),
       el('td', { className: 'truncate' }, b.hash)
     ));
