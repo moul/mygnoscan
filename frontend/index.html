@@ -264,6 +264,36 @@ const KNOWN_ADDRS = {
   'g1m0rgan0rla00ygmdmp55f5m0unvsvknluyg2a4': '@morgan',
   'g148583t5x66zs6p90ehad6l4qefeyaf54s69wql': '@faucet',
 };
+// Validator moniker map: address → moniker (loaded from /api/validators)
+const _valMonikers = {};
+async function loadValMonikers() {
+  try {
+    const txs = await fetch('/api/validators?network=' + getNetwork()).then(r => r.json());
+    for (const tx of (txs || [])) {
+      if (!tx.success) continue;
+      for (const msg of (tx.messages || [])) {
+        const v = msg.value;
+        if (v.__typename === 'MsgCall' && (v.args || []).length > 0) {
+          _valMonikers[v.caller] = v.args[0];
+        }
+      }
+    }
+  } catch(e) {}
+}
+function proposerEl(addr) {
+  const moniker = _valMonikers[addr];
+  const span = el('span');
+  span.setAttribute('data-hl', addr);
+  if (moniker) {
+    const a = link(moniker, () => navigate('/address/' + addr + netSuffix(getNetwork())));
+    a.setAttribute('data-hl', addr);
+    span.appendChild(a);
+    span.appendChild(el('span', { className: 'block-ctx' }, ' ' + addr.slice(0, 8) + '...'));
+  } else {
+    span.appendChild(addrLink(addr));
+  }
+  return span;
+}
 function addrLabel(addr) { return KNOWN_ADDRS[addr] || ''; }
 function shortAddr(addr) {
   if (!addr) return '';
@@ -863,7 +893,7 @@ async function loadBlocks() {
   statsBar.style.display = 'none';
   filterBar.style.display = 'none';
   try {
-    const data = await api('blocks?limit=500');
+    const [data] = await Promise.all([api('blocks?limit=500'), loadValMonikers()]);
     _blocksCache = data;
     _blocksWithTxsOnly = false;
     const withTxs = (data || []).filter(b => b.num_txs > 0);
@@ -898,7 +928,7 @@ function renderBlockRows() {
       el('td', {}, blockLink(b.height, b.network)),
       el('td', {}, timeEl(b.time)),
       el('td', { style: b.num_txs === 0 ? { color: 'var(--fg2)' } : {} }, String(b.num_txs)),
-      el('td', { className: 'truncate' }, addrLink(b.proposer_address_raw)),
+      el('td', { className: 'truncate' }, proposerEl(b.proposer_address_raw)),
       el('td', { className: 'truncate' }, b.hash)
     ));
   }
@@ -2502,7 +2532,7 @@ function onLiveBlock(block, network) {
       el('td', {}, blockLink(block.height, network)),
       el('td', {}, timeEl(block.time || new Date().toISOString())),
       el('td', { style: block.num_txs === 0 ? { color: 'var(--fg2)' } : {} }, String(block.num_txs || 0)),
-      el('td', { className: 'truncate' }, addrLink(block.proposer_address_raw)),
+      el('td', { className: 'truncate' }, proposerEl(block.proposer_address_raw)),
       el('td', { className: 'truncate' }, block.hash || '-')
     );
     blocksList.insertBefore(tr, blocksList.firstChild);
