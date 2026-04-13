@@ -610,6 +610,15 @@ func (a *API) HandleGas(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (a *API) HandleAnalytics(w http.ResponseWriter, r *http.Request) {
+	analytics, err := a.db.GetAnalytics()
+	if err != nil {
+		jsonError(w, err.Error(), 500)
+		return
+	}
+	jsonResponse(w, analytics)
+}
+
 // fetchBalance queries the gno.land RPC for bank balance.
 func fetchBalance(ctx context.Context, addr string) string {
 	rpcURL := fmt.Sprintf("https://rpc.gno.land/abci_query?path=%%22bank/balances/%s%%22&data=0x", addr)

@@ -677,6 +677,146 @@ func (d *DB) GetBankStats() (*BankStats, error) {
 	return &s, nil
 }
 
+type RealmActivity struct {
+	Path       string `json:"path"`
+	Calls      int    `json:"calls"`
+	Callers    int    `json:"callers"`
+	Dependents int    `json:"dependents"`
+	IsRealm    bool   `json:"is_realm"`
+}
+
+type CallerActivity struct {
+	Address string `json:"address"`
+	Calls   int    `json:"calls"`
+	Realms  int    `json:"realms"`
+}
+
+type ImportRank struct {
+	Path    string `json:"path"`
+	Imports int    `json:"imports"`
+}
+
+type Analytics struct {
+	// Summaries
+	TotalRealms    int `json:"total_realms"`
+	TotalPackages  int `json:"total_packages"`
+	TotalCalls     int `json:"total_calls"`
+	TotalDeploys   int `json:"total_deploys"`
+	TotalMsgRuns   int `json:"total_msg_runs"`
+	TotalSends     int `json:"total_sends"`
+	TotalAddresses int `json:"total_addresses"`
+	TotalSourceKB  int `json:"total_source_kb"`
+
+	// Rankings
+	TopRealms    []RealmActivity  `json:"top_realms"`
+	TopPackages  []RealmActivity  `json:"top_packages"`
+	TopCallers   []CallerActivity `json:"top_callers"`
+	TopImports   []ImportRank     `json:"top_imports"`
+	TopDeployers []CallerActivity `json:"top_deployers"`
+	RecentRealms []PackageInfo    `json:"recent_realms"`
+}
+
+func (d *DB) GetAnalytics() (*Analytics, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	var a Analytics
+	d.db.QueryRow(`SELECT COUNT(*) FROM packages WHERE is_realm = 1`).Scan(&a.TotalRealms)
+	d.db.QueryRow(`SELECT COUNT(*) FROM packages WHERE is_realm = 0`).Scan(&a.TotalPackages)
+	d.db.QueryRow(`SELECT COUNT(*) FROM calls`).Scan(&a.TotalCalls)
+	d.db.QueryRow(`SELECT COUNT(*) FROM packages`).Scan(&a.TotalDeploys)
+	d.db.QueryRow(`SELECT COUNT(*) FROM msg_runs`).Scan(&a.TotalMsgRuns)
+	d.db.QueryRow(`SELECT COUNT(*) FROM bank_sends`).Scan(&a.TotalSends)
+	d.db.QueryRow(`SELECT COUNT(DISTINCT addr) FROM (
+		SELECT caller as addr FROM calls UNION SELECT creator FROM packages
+		UNION SELECT caller FROM msg_runs UNION SELECT from_address FROM bank_sends
+		UNION SELECT to_address FROM bank_sends
+	)`).Scan(&a.TotalAddresses)
+	d.db.QueryRow(`SELECT COALESCE(SUM(LENGTH(body)), 0) / 1024 FROM package_files`).Scan(&a.TotalSourceKB)
+
+	// Top realms by calls
+	rows, _ := d.db.Query(`
+		SELECT p.path, COALESCE(c.cnt, 0), COALESCE(c.callers, 0), COALESCE(dep.cnt, 0), p.is_realm
+		FROM packages p
+		LEFT JOIN (SELECT pkg_path, COUNT(*) as cnt, COUNT(DISTINCT caller) as callers FROM calls GROUP BY pkg_path) c ON c.pkg_path = p.path
+		LEFT JOIN (SELECT import_path, COUNT(*) as cnt FROM dependencies GROUP BY import_path) dep ON dep.import_path = p.path
+		WHERE p.is_realm = 1
+		ORDER BY COALESCE(c.cnt, 0) DESC LIMIT 15
+	`)
+	if rows != nil {
+		defer rows.Close()
+		for rows.Next() {
+			var r RealmActivity
+			rows.Scan(&r.Path, &r.Calls, &r.Callers, &r.Dependents, &r.IsRealm)
+			a.TopRealms = append(a.TopRealms, r)
+		}
+	}
+
+	// Top packages by imports (dependents)
+	rows2, _ := d.db.Query(`
+		SELECT p.path, COALESCE(c.cnt, 0), 0, COALESCE(dep.cnt, 0), p.is_realm
+		FROM packages p
+		LEFT JOIN (SELECT pkg_path, COUNT(*) as cnt FROM calls GROUP BY pkg_path) c ON c.pkg_path = p.path
+		LEFT JOIN (SELECT import_path, COUNT(*) as cnt FROM dependencies GROUP BY import_path) dep ON dep.import_path = p.path
+		WHERE p.is_realm = 0
+		ORDER BY COALESCE(dep.cnt, 0) DESC LIMIT 15
+	`)
+	if rows2 != nil {
+		defer rows2.Close()
+		for rows2.Next() {
+			var r RealmActivity
+			rows2.Scan(&r.Path, &r.Calls, &r.Callers, &r.Dependents, &r.IsRealm)
+			a.TopPackages = append(a.TopPackages, r)
+		}
+	}
+
+	// Top callers
+	rows3, _ := d.db.Query(`SELECT caller, COUNT(*) as c, COUNT(DISTINCT pkg_path) as realms FROM calls GROUP BY caller ORDER BY c DESC LIMIT 15`)
+	if rows3 != nil {
+		defer rows3.Close()
+		for rows3.Next() {
+			var c CallerActivity
+			rows3.Scan(&c.Address, &c.Calls, &c.Realms)
+			a.TopCallers = append(a.TopCallers, c)
+		}
+	}
+
+	// Top imports
+	rows4, _ := d.db.Query(`SELECT import_path, COUNT(*) as c FROM dependencies WHERE import_path LIKE 'gno.land/%' GROUP BY import_path ORDER BY c DESC LIMIT 15`)
+	if rows4 != nil {
+		defer rows4.Close()
+		for rows4.Next() {
+			var i ImportRank
+			rows4.Scan(&i.Path, &i.Imports)
+			a.TopImports = append(a.TopImports, i)
+		}
+	}
+
+	// Top deployers
+	rows5, _ := d.db.Query(`SELECT creator, COUNT(*) as c, 0 FROM packages GROUP BY creator ORDER BY c DESC LIMIT 15`)
+	if rows5 != nil {
+		defer rows5.Close()
+		for rows5.Next() {
+			var c CallerActivity
+			rows5.Scan(&c.Address, &c.Calls, &c.Realms)
+			a.TopDeployers = append(a.TopDeployers, c)
+		}
+	}
+
+	// Recent realms
+	rows6, _ := d.db.Query(`SELECT path, name, creator, block_height, tx_hash, is_realm, num_files FROM packages WHERE is_realm = 1 ORDER BY block_height DESC LIMIT 10`)
+	if rows6 != nil {
+		defer rows6.Close()
+		for rows6.Next() {
+			var p PackageInfo
+			rows6.Scan(&p.Path, &p.Name, &p.Creator, &p.BlockHeight, &p.TxHash, &p.IsRealm, &p.NumFiles)
+			a.RecentRealms = append(a.RecentRealms, p)
+		}
+	}
+
+	return &a, nil
+}
+
 func (d *DB) queryAddrStats(query string) []AddrStat {
 	rows, err := d.db.Query(query)
 	if err != nil {

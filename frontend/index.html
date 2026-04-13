@@ -139,6 +139,7 @@ footer a:hover { color: var(--accent); }
       <a onclick="navigate('/validators')" id="nav-validators">validators</a>
       <a onclick="navigate('/govdao')" id="nav-govdao">govdao</a>
       <a onclick="navigate('/gas')" id="nav-gas">gas</a>
+      <a onclick="navigate('/analytics')" id="nav-analytics">analytics</a>
       <a onclick="navigate('/events')" id="nav-events">events</a>
     </nav>
     <div class="search-box">
@@ -196,6 +197,7 @@ footer a:hover { color: var(--accent); }
     <div id="validators-content"></div></div></main></div>
   <div class="view" id="view-govdao"><main><div id="govdao-stats" class="stats-bar" style="display:none"></div><div class="section"><div class="section-title">govdao activity</div>
     <table><thead><tr><th>block</th><th>caller</th><th>function</th><th>status</th><th>tx</th></tr></thead><tbody id="govdao-list"></tbody></table></div></main></div>
+  <div class="view" id="view-analytics"><main><div id="analytics-content"></div></main></div>
   <div class="view" id="view-gas"><main><div id="gas-content"></div></main></div>
   <div class="view" id="view-block-detail"><main><div id="block-detail-content"></div></main></div>
   <div class="view" id="view-events"><main>
@@ -532,6 +534,7 @@ function route() {
   else if (path === '/govdao') { view = 'govdao'; }
   else if (path === '/events') { view = 'events'; }
   else if (path === '/gas') { view = 'gas'; }
+  else if (path === '/analytics') { view = 'analytics'; }
   else if (path.startsWith('/block/')) { view = 'block-detail'; data = parseInt(path.slice(7)); }
   else if (path.startsWith('/realm/')) { view = 'realm-detail'; data = 'gno.land/' + path.slice(7); }
   else if (path.startsWith('/tx/')) { view = 'tx-detail'; data = decodeURIComponent(path.slice(4)); }
@@ -555,6 +558,7 @@ function route() {
     case 'govdao': loadGovDAO(); break;
     case 'events': loadEvents(); break;
     case 'gas': loadGas(); break;
+    case 'analytics': loadAnalytics(); break;
     case 'block-detail': loadBlockDetail(data); break;
     case 'realm-detail': loadRealmDetail(data, urlTab); break;
     case 'tx-detail': loadTxDetail(data); break;
@@ -1060,6 +1064,121 @@ function renderValoperRows(container) {
     }
   }
   tbl.appendChild(tbody); wrap.appendChild(tbl);
+}
+
+async function loadAnalytics() {
+  const container = clear('analytics-content');
+  skeletonBlock(container);
+  try {
+    const data = await api('analytics');
+    container.textContent = '';
+
+    // Overview stats
+    const stats = el('div', { className: 'stats-bar' });
+    stats.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'realms'), el('span', { className: 'value' }, fmtNum(data.total_realms))));
+    stats.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'packages'), el('span', { className: 'value' }, fmtNum(data.total_packages))));
+    stats.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'calls'), el('span', { className: 'value' }, fmtNum(data.total_calls))));
+    stats.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'deploys'), el('span', { className: 'value' }, fmtNum(data.total_deploys))));
+    stats.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'runs'), el('span', { className: 'value' }, fmtNum(data.total_msg_runs))));
+    stats.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'sends'), el('span', { className: 'value' }, fmtNum(data.total_sends))));
+    stats.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'addresses'), el('span', { className: 'value' }, fmtNum(data.total_addresses))));
+    stats.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'source'), el('span', { className: 'value' }, fmtNum(data.total_source_kb) + ' KB')));
+    container.appendChild(stats);
+
+    // Grid layout for rankings
+    const grid = el('div', { style: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '24px', marginTop: '16px' } });
+
+    // Top realms by calls
+    const realmsCol = el('div');
+    realmsCol.appendChild(el('div', { className: 'section-title' }, 'top realms (by calls)'));
+    const rtbl = el('table');
+    rtbl.appendChild(el('thead', {}, el('tr', {}, el('th', {}, 'realm'), el('th', {}, 'calls'), el('th', {}, 'callers'), el('th', {}, 'dependents'))));
+    const rbody = el('tbody');
+    for (const r of (data.top_realms || [])) {
+      rbody.appendChild(el('tr', {},
+        el('td', {}, realmPathEl(r.path)),
+        el('td', {}, fmtNum(r.calls)),
+        el('td', {}, fmtNum(r.callers)),
+        el('td', {}, fmtNum(r.dependents))
+      ));
+    }
+    rtbl.appendChild(rbody); realmsCol.appendChild(rtbl); grid.appendChild(realmsCol);
+
+    // Top packages by imports
+    const pkgsCol = el('div');
+    pkgsCol.appendChild(el('div', { className: 'section-title' }, 'top packages (by dependents)'));
+    const ptbl = el('table');
+    ptbl.appendChild(el('thead', {}, el('tr', {}, el('th', {}, 'package'), el('th', {}, 'dependents'), el('th', {}, 'calls'))));
+    const pbody = el('tbody');
+    for (const p of (data.top_packages || [])) {
+      pbody.appendChild(el('tr', {},
+        el('td', {}, realmPathEl(p.path)),
+        el('td', {}, fmtNum(p.dependents)),
+        el('td', {}, fmtNum(p.calls))
+      ));
+    }
+    ptbl.appendChild(pbody); pkgsCol.appendChild(ptbl); grid.appendChild(pkgsCol);
+
+    // Top callers
+    const callersCol = el('div');
+    callersCol.appendChild(el('div', { className: 'section-title' }, 'top callers'));
+    const ctbl = el('table');
+    ctbl.appendChild(el('thead', {}, el('tr', {}, el('th', {}, 'address'), el('th', {}, 'calls'), el('th', {}, 'realms'))));
+    const cbody = el('tbody');
+    for (const c of (data.top_callers || [])) {
+      cbody.appendChild(el('tr', {},
+        el('td', {}, addrLink(c.address)),
+        el('td', {}, fmtNum(c.calls)),
+        el('td', {}, fmtNum(c.realms))
+      ));
+    }
+    ctbl.appendChild(cbody); callersCol.appendChild(ctbl); grid.appendChild(callersCol);
+
+    // Top deployers
+    const deployCol = el('div');
+    deployCol.appendChild(el('div', { className: 'section-title' }, 'top deployers'));
+    const dtbl = el('table');
+    dtbl.appendChild(el('thead', {}, el('tr', {}, el('th', {}, 'address'), el('th', {}, 'deploys'))));
+    const dbody = el('tbody');
+    for (const d of (data.top_deployers || [])) {
+      dbody.appendChild(el('tr', {},
+        el('td', {}, addrLink(d.address)),
+        el('td', {}, fmtNum(d.calls))
+      ));
+    }
+    dtbl.appendChild(dbody); deployCol.appendChild(dtbl); grid.appendChild(deployCol);
+
+    // Most imported
+    const impCol = el('div');
+    impCol.appendChild(el('div', { className: 'section-title' }, 'most imported'));
+    const itbl = el('table');
+    itbl.appendChild(el('thead', {}, el('tr', {}, el('th', {}, 'path'), el('th', {}, 'importers'))));
+    const ibody = el('tbody');
+    for (const i of (data.top_imports || [])) {
+      ibody.appendChild(el('tr', {},
+        el('td', {}, realmPathEl(i.path)),
+        el('td', {}, fmtNum(i.imports))
+      ));
+    }
+    itbl.appendChild(ibody); impCol.appendChild(itbl); grid.appendChild(impCol);
+
+    // Recent realms
+    const recentCol = el('div');
+    recentCol.appendChild(el('div', { className: 'section-title' }, 'recently deployed realms'));
+    const rctbl = el('table');
+    rctbl.appendChild(el('thead', {}, el('tr', {}, el('th', {}, 'realm'), el('th', {}, 'creator'), el('th', {}, 'block'))));
+    const rcbody = el('tbody');
+    for (const r of (data.recent_realms || [])) {
+      rcbody.appendChild(el('tr', {},
+        el('td', {}, realmPathEl(r.path)),
+        el('td', {}, addrLink(r.creator)),
+        el('td', {}, blockLink(r.block_height))
+      ));
+    }
+    rctbl.appendChild(rcbody); recentCol.appendChild(rctbl); grid.appendChild(recentCol);
+
+    container.appendChild(grid);
+  } catch (err) { container.textContent = ''; container.appendChild(el('p', { style: { color: 'var(--red)' } }, 'Error: ' + err.message)); }
 }
 
 async function loadGas() {

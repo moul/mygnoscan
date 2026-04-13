@@ -98,6 +98,7 @@ func run() error {
 	mux.HandleFunc("GET /api/address/{addr}", api.HandleAddress)
 	mux.HandleFunc("GET /api/search", api.HandleSearch)
 	mux.HandleFunc("GET /api/deps/{path...}", api.HandleDeps)
+	mux.HandleFunc("GET /api/analytics", api.HandleAnalytics)
 	mux.HandleFunc("GET /api/gas", api.HandleGas)
 	mux.HandleFunc("GET /api/bankstats", api.HandleBankStats)
 	mux.HandleFunc("GET /api/storage/{path...}", api.HandleStorage)
