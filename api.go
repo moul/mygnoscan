@@ -267,16 +267,40 @@ func (a *API) HandleAddress(w http.ResponseWriter, r *http.Request) {
 	network := a.networkParam(r)
 	addr := r.PathValue("addr")
 
-	// Get transactions for this address
-	client := a.clientFor(network)
-	if client == nil {
-		jsonError(w, "no client available", 500)
-		return
-	}
-	txs, err := client.GetTransactionsByAddress(r.Context(), addr)
-	if err != nil {
-		jsonError(w, err.Error(), 500)
-		return
+	// Get transactions for this address (fan-out to all networks when unfiltered)
+	var txs []Transaction
+	if network == "" {
+		seen := make(map[string]bool)
+		for _, n := range a.networks {
+			c := a.clients[n.ID]
+			if c == nil {
+				continue
+			}
+			netTxs, err := c.GetTransactionsByAddress(r.Context(), addr)
+			if err != nil {
+				continue
+			}
+			for i := range netTxs {
+				netTxs[i].Network = n.ID
+				if !seen[netTxs[i].Hash] {
+					seen[netTxs[i].Hash] = true
+					txs = append(txs, netTxs[i])
+				}
+			}
+		}
+		sort.Slice(txs, func(i, j int) bool { return txs[i].BlockHeight > txs[j].BlockHeight })
+	} else {
+		c := a.clientFor(network)
+		if c == nil {
+			jsonError(w, "no client available", 500)
+			return
+		}
+		var err error
+		txs, err = c.GetTransactionsByAddress(r.Context(), addr)
+		if err != nil {
+			jsonError(w, err.Error(), 500)
+			return
+		}
 	}
 
 	// Get packages created by this address

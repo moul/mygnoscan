@@ -108,6 +108,7 @@ type Transaction struct {
 	Messages    []TxMessage  `json:"messages"`
 	Response    *TxResponse  `json:"response"`
 	ContentRaw  string       `json:"content_raw,omitempty"`
+	Network     string       `json:"network,omitempty"`
 }
 
 type Coin struct {
