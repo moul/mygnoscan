@@ -275,7 +275,7 @@ function addrLink(addr) {
   const label = KNOWN_ADDRS[addr];
   const span = el('span');
   span.setAttribute('data-hl', addr);
-  const a = link(label || addr, () => navigate('/address/' + addr));
+  const a = link(label || addr, () => navigate('/address/' + addr + netSuffix(getNetwork())));
   a.setAttribute('data-hl', addr);
   span.appendChild(a);
   if (label) {
@@ -286,8 +286,9 @@ function addrLink(addr) {
 // Pretty realm path: /r/namespace/name or /p/namespace/name
 // Colors: type dim, namespace blue, name bold white
 // g1... namespaces get shortened
-function realmPathEl(fullPath) {
+function realmPathEl(fullPath, network) {
   const path = fullPath.replace('gno.land', '');
+  const ns = netSuffix(network);
   // Ephemeral package: /e/g1.../run -> link to address
   const em = path.match(/^\/e\/(g1[a-z0-9]+)(\/.*)?$/);
   if (em) {
@@ -302,22 +303,22 @@ function realmPathEl(fullPath) {
   // Parse: /r/namespace/rest or /p/namespace/rest
   const m = path.match(/^\/([rp])\/([^/]+)(\/.*)?$/);
   if (!m) {
-    return link(path, () => navigate('/realm' + path));
+    return link(path, () => navigate('/realm' + path + ns));
   }
   const type = m[1]; // r or p
-  const ns = m[2]; // namespace (could be g1... or a name)
+  const nsName = m[2]; // namespace (could be g1... or a name)
   const rest = m[3] || ''; // /pkgname or /sub/path
   const span = el('span', { style: { cursor: 'pointer' } });
-  span.addEventListener('click', () => navigate('/realm' + path));
+  span.addEventListener('click', () => navigate('/realm' + path + ns));
   // Type prefix
   span.appendChild(el('span', { className: 'rp-type' }, '/' + type + '/'));
   // Namespace: shorten if g1 address
-  if (ns.match(/^g1[a-z0-9]{38,}/)) {
-    const nsEl = el('span', { className: 'rp-ns' }, ns.slice(0, 8) + '...');
-    nsEl.setAttribute('data-hl', ns);
+  if (nsName.match(/^g1[a-z0-9]{38,}/)) {
+    const nsEl = el('span', { className: 'rp-ns' }, nsName.slice(0, 8) + '...');
+    nsEl.setAttribute('data-hl', nsName);
     span.appendChild(nsEl);
   } else {
-    span.appendChild(el('span', { className: 'rp-ns' }, ns));
+    span.appendChild(el('span', { className: 'rp-ns' }, nsName));
   }
   // Package name (bold)
   if (rest) {
@@ -454,10 +455,10 @@ function typeBadge(t) {
   const [c, x] = m[t] || ['', t || '?']; return badge(c, x);
 }
 // tx link with block context: "hash (genesis)" or "hash (block N)"
-function txLink(hash, blockHeight) {
+function txLink(hash, blockHeight, network) {
   const span = el('span');
   span.setAttribute('data-hl', 'tx:' + hash);
-  const a = link(hash, () => navigate('/tx/' + encodeURIComponent(hash)));
+  const a = link(hash, () => navigate('/tx/' + encodeURIComponent(hash) + netSuffix(network)));
   a.setAttribute('data-hl', 'tx:' + hash);
   span.appendChild(a);
   const ctx = blockHeight === 0 ? ' (genesis)' : ' (block ' + fmtNum(blockHeight) + ')';
@@ -501,7 +502,12 @@ function timeAgo(t) {
   if (s < 86400) return Math.floor(s/3600) + 'h ago'; return Math.floor(s/86400) + 'd ago';
 }
 function blockLabel(h) { return h === 0 ? 'genesis' : fmtNum(h); }
-function blockLink(h) { return link(blockLabel(h), () => navigate('/block/' + h)); }
+function blockLink(h, network) {
+  const span = el('span');
+  span.appendChild(link(blockLabel(h), () => navigate('/block/' + h + netSuffix(network))));
+  if (network) span.appendChild(netBadgeEl(network));
+  return span;
+}
 // Parse text for g1... addresses and gno.land/... paths, return a span with links
 function linkify(text) {
   const span = el('span');
@@ -522,7 +528,12 @@ function getNetwork() { return localStorage.getItem('mygnoscan-network') || 'all
 function setNetwork(n) { localStorage.setItem('mygnoscan-network', n); }
 function onNetworkChange() {
   const sel = document.getElementById('network-select');
-  setNetwork(sel.value);
+  const n = sel.value;
+  setNetwork(n);
+  const params = new URLSearchParams(window.location.search);
+  if (n && n !== 'all') { params.set('network', n); } else { params.delete('network'); }
+  const newUrl = window.location.pathname + (params.toString() ? '?' + params.toString() : '');
+  history.replaceState(null, '', newUrl);
   route();
 }
 function netBadgeEl(networkId) {
@@ -531,6 +542,10 @@ function netBadgeEl(networkId) {
   span.className = 'net-badge net-' + networkId;
   span.textContent = networkId;
   return span;
+}
+function netSuffix(n) {
+  const net = (n !== undefined ? n : null) || getNetwork();
+  return (net && net !== 'all') ? '?network=' + net : '';
 }
 async function initNetworkSelector() {
   try {
@@ -568,6 +583,12 @@ function route() {
   const path = window.location.pathname;
   document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
   document.querySelectorAll('nav a').forEach(a => a.classList.remove('active'));
+  const urlNetwork = new URLSearchParams(window.location.search).get('network');
+  if (urlNetwork) {
+    setNetwork(urlNetwork);
+    const sel = document.getElementById('network-select');
+    if (sel && sel.value !== urlNetwork) sel.value = urlNetwork;
+  }
 
   let view = 'home', data = null;
   if (path === '/' || path === '') { view = 'home'; }
@@ -634,13 +655,11 @@ async function loadHome() {
     for (const b of (Array.isArray(blocksData) ? blocksData : [])) blockTime[b.height] = b.time;
     const tbody = clear('latest-realms');
     for (const r of (realmsData?.items || [])) {
-      const pathTd = el('td', {}, realmPathEl(r.path));
-      if (r.network) pathTd.appendChild(netBadgeEl(r.network));
       tbody.appendChild(el('tr', {},
-        pathTd,
+        el('td', {}, realmPathEl(r.path, r.network)),
         el('td', {}, addrLink(r.creator)),
         el('td', {}, String(r.num_files)),
-        el('td', {}, blockLink(r.block_height))
+        el('td', {}, blockLink(r.block_height, r.network))
       ));
     }
     const txBody = clear('recent-txs');
@@ -648,7 +667,7 @@ async function loadHome() {
       const msg = tx.messages?.[0];
       const when = tx.block_time ? timeAgo(tx.block_time) : blockTime[tx.block_height] ? timeAgo(blockTime[tx.block_height]) : (tx.block_height === 0 ? 'genesis' : '');
       txBody.appendChild(el('tr', {},
-        el('td', {}, blockLink(tx.block_height)),
+        el('td', {}, blockLink(tx.block_height, tx.network)),
         el('td', {}, typeBadge(msg?.value?.__typename)),
         el('td', {}, txDetailEl(msg)),
         el('td', {}, statusBadge(tx.success)),
@@ -675,12 +694,10 @@ async function loadRealms(page) {
     }
     const list = clear('realms-list');
     for (const r of (data.items || [])) {
-      const pathTd = el('td', {}, realmPathEl(r.path));
-      if (r.network) pathTd.appendChild(netBadgeEl(r.network));
       list.appendChild(el('tr', {},
-        pathTd,
+        el('td', {}, realmPathEl(r.path, r.network)),
         el('td', {}, addrLink(r.creator)),
-        el('td', {}, blockLink(r.block_height)), el('td', {}, String(r.num_files))
+        el('td', {}, blockLink(r.block_height, r.network)), el('td', {}, String(r.num_files))
       ));
     }
     pager(section, page, data.total || 0, loadRealms);
@@ -702,12 +719,10 @@ async function loadPackages(page) {
     }
     const list = clear('packages-list');
     for (const p of (data.items || [])) {
-      const pathTd = el('td', {}, realmPathEl(p.path));
-      if (p.network) pathTd.appendChild(netBadgeEl(p.network));
       list.appendChild(el('tr', {},
-        pathTd,
+        el('td', {}, realmPathEl(p.path, p.network)),
         el('td', {}, addrLink(p.creator)),
-        el('td', {}, blockLink(p.block_height)), el('td', {}, String(p.num_files))
+        el('td', {}, blockLink(p.block_height, p.network)), el('td', {}, String(p.num_files))
       ));
     }
     pager(section, page, data.total || 0, loadPackages);
@@ -813,11 +828,9 @@ function renderTxRows() {
   }
   for (const tx of page) {
     const msg = tx.messages?.[0];
-    const blockTd = el('td', {}, blockLink(tx.block_height));
-    if (tx.network) blockTd.appendChild(netBadgeEl(tx.network));
     list.appendChild(el('tr', {},
-      el('td', {}, txLink(tx.hash, tx.block_height)),
-      blockTd,
+      el('td', {}, txLink(tx.hash, tx.block_height, tx.network)),
+      el('td', {}, blockLink(tx.block_height, tx.network)),
       el('td', {}, typeBadge(msg?.value?.__typename)),
       el('td', {}, txDetailEl(msg)),
       el('td', {}, statusBadge(tx.success))
@@ -1970,8 +1983,7 @@ async function loadAddressDetail(addr) {
       container.appendChild(el('div', { className: 'section-title' }, 'deployed packages (' + pkgs.length + ')'));
       const ptbl = el('table');
       for (const p of pkgs) {
-        const pathTd = el('td'); pathTd.appendChild(realmPathEl(p.path)); if (p.network) pathTd.appendChild(netBadgeEl(p.network));
-        ptbl.appendChild(el('tr', {}, pathTd, el('td', {}, p.is_realm ? 'realm' : 'package')));
+        ptbl.appendChild(el('tr', {}, el('td', {}, realmPathEl(p.path, p.network)), el('td', {}, p.is_realm ? 'realm' : 'package')));
       }
       container.appendChild(ptbl);
     }
@@ -1983,9 +1995,8 @@ async function loadAddressDetail(addr) {
     for (const tx of txs) {
       const msg = tx.messages?.[0];
       const when = tx.block_time ? timeAgo(tx.block_time) : blockTime[tx.block_height] ? timeAgo(blockTime[tx.block_height]) : (tx.block_height === 0 ? 'genesis' : '');
-      const txTd = el('td'); txTd.appendChild(txLink(tx.hash, tx.block_height)); if (tx.network) txTd.appendChild(netBadgeEl(tx.network));
       tbody.appendChild(el('tr', {},
-        txTd,
+        el('td', {}, txLink(tx.hash, tx.block_height, tx.network)),
         el('td', {}, typeBadge(msg?.value?.__typename)),
         el('td', {}, txDetailEl(msg)),
         el('td', {}, statusBadge(tx.success)),
