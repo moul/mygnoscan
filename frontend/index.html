@@ -646,7 +646,7 @@ async function loadHome() {
     const txBody = clear('recent-txs');
     for (const tx of (txsData?.items || [])) {
       const msg = tx.messages?.[0];
-      const when = blockTime[tx.block_height] ? timeAgo(blockTime[tx.block_height]) : (tx.block_height === 0 ? 'genesis' : '');
+      const when = tx.block_time ? timeAgo(tx.block_time) : blockTime[tx.block_height] ? timeAgo(blockTime[tx.block_height]) : (tx.block_height === 0 ? 'genesis' : '');
       txBody.appendChild(el('tr', {},
         el('td', {}, blockLink(tx.block_height)),
         el('td', {}, typeBadge(msg?.value?.__typename)),
@@ -1982,7 +1982,7 @@ async function loadAddressDetail(addr) {
     const tbody = el('tbody');
     for (const tx of txs) {
       const msg = tx.messages?.[0];
-      const when = blockTime[tx.block_height] ? timeAgo(blockTime[tx.block_height]) : (tx.block_height === 0 ? 'genesis' : '');
+      const when = tx.block_time ? timeAgo(tx.block_time) : blockTime[tx.block_height] ? timeAgo(blockTime[tx.block_height]) : (tx.block_height === 0 ? 'genesis' : '');
       const txTd = el('td'); txTd.appendChild(txLink(tx.hash, tx.block_height)); if (tx.network) txTd.appendChild(netBadgeEl(tx.network));
       tbody.appendChild(el('tr', {},
         txTd,

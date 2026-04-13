@@ -109,6 +109,8 @@ type Transaction struct {
 	Response    *TxResponse  `json:"response"`
 	ContentRaw  string       `json:"content_raw,omitempty"`
 	Network     string       `json:"network,omitempty"`
+	BlockTime   string       `json:"block_time,omitempty"`
+	ChainID     string       `json:"chain_id,omitempty"`
 }
 
 type Coin struct {
@@ -470,6 +472,21 @@ func (c *IndexerClient) GetRecentBlocks(ctx context.Context, limit int) ([]Block
 		) { %s }
 	}`, fromHeight, blockFields)
 	err = c.query(ctx, q, nil, &result)
+	return result.GetBlocks, err
+}
+
+// GetBlocksInRange fetches all blocks between fromHeight and toHeight inclusive.
+func (c *IndexerClient) GetBlocksInRange(ctx context.Context, fromHeight, toHeight int) ([]Block, error) {
+	var result struct {
+		GetBlocks []Block `json:"getBlocks"`
+	}
+	q := fmt.Sprintf(`{
+		getBlocks(
+			where: { height: { gte: %d, lte: %d } }
+			order: { height: ASC }
+		) { %s }
+	}`, fromHeight, toHeight, blockFields)
+	err := c.query(ctx, q, nil, &result)
 	return result.GetBlocks, err
 }
 

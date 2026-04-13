@@ -35,6 +35,33 @@ func jsonError(w http.ResponseWriter, msg string, code int) {
 	json.NewEncoder(w).Encode(map[string]string{"error": msg})
 }
 
+// stampBlockTimes fetches block times for the given transactions and sets BlockTime on each.
+func stampBlockTimes(ctx context.Context, client *IndexerClient, txs []Transaction) {
+	if len(txs) == 0 {
+		return
+	}
+	minH, maxH := txs[0].BlockHeight, txs[0].BlockHeight
+	for _, tx := range txs {
+		if tx.BlockHeight < minH {
+			minH = tx.BlockHeight
+		}
+		if tx.BlockHeight > maxH {
+			maxH = tx.BlockHeight
+		}
+	}
+	blocks, err := client.GetBlocksInRange(ctx, minH, maxH)
+	if err != nil {
+		return
+	}
+	bt := make(map[int]string, len(blocks))
+	for _, b := range blocks {
+		bt[b.Height] = b.Time
+	}
+	for i := range txs {
+		txs[i].BlockTime = bt[txs[i].BlockHeight]
+	}
+}
+
 // networkParam reads ?network from request. Returns "" for "all" (no filter), or specific network ID.
 func (a *API) networkParam(r *http.Request) string {
 	n := r.URL.Query().Get("network")
@@ -239,15 +266,22 @@ func (a *API) HandleTxs(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			continue
 		}
+		stampBlockTimes(r.Context(), client, txs)
 		for _, tx := range txs {
 			if seen[tx.Hash] {
 				continue
 			}
 			seen[tx.Hash] = true
+			tx.Network = n.ID
 			merged = append(merged, netTx{Transaction: tx, Network: n.ID})
 		}
 	}
-	sort.Slice(merged, func(i, j int) bool { return merged[i].BlockHeight > merged[j].BlockHeight })
+	sort.Slice(merged, func(i, j int) bool {
+		if merged[i].BlockTime != "" && merged[j].BlockTime != "" {
+			return merged[i].BlockTime > merged[j].BlockTime
+		}
+		return merged[i].BlockHeight > merged[j].BlockHeight
+	})
 	total := len(merged)
 	if limit <= 0 {
 		jsonResponse(w, map[string]any{"items": merged, "total": total})
@@ -280,6 +314,7 @@ func (a *API) HandleAddress(w http.ResponseWriter, r *http.Request) {
 			if err != nil {
 				continue
 			}
+			stampBlockTimes(r.Context(), c, netTxs)
 			for i := range netTxs {
 				netTxs[i].Network = n.ID
 				if !seen[netTxs[i].Hash] {
@@ -288,7 +323,12 @@ func (a *API) HandleAddress(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
-		sort.Slice(txs, func(i, j int) bool { return txs[i].BlockHeight > txs[j].BlockHeight })
+		sort.Slice(txs, func(i, j int) bool {
+			if txs[i].BlockTime != "" && txs[j].BlockTime != "" {
+				return txs[i].BlockTime > txs[j].BlockTime
+			}
+			return txs[i].BlockHeight > txs[j].BlockHeight
+		})
 	} else {
 		c := a.clientFor(network)
 		if c == nil {
