@@ -54,12 +54,8 @@ func run() error {
 			return err
 		}
 		cfg = loaded
-	} else if *indexerFlag != "" {
-		id := *networkFlag
-		if id == "" {
-			id = "default"
-		}
-		cfg = &AppConfig{Networks: []NetworkConfig{{ID: id, IndexerURL: *indexerFlag, RPCURL: *rpcFlag}}}
+	} else if *indexerFlag != "" && *networkFlag != "" {
+		cfg = &AppConfig{Networks: []NetworkConfig{{ID: *networkFlag, IndexerURL: *indexerFlag, RPCURL: *rpcFlag}}}
 	} else {
 		if _, serr := os.Stat("networks.json"); serr == nil {
 			if loaded, lerr := LoadConfig("networks.json"); lerr == nil {
