@@ -17,7 +17,7 @@ import (
 //go:embed frontend
 var frontendFS embed.FS
 
-var gitHash = "dev"   // set via -ldflags at build time
+var gitHash = "dev"       // set via -ldflags at build time
 var buildTime = "unknown" // set via -ldflags at build time
 
 func main() {
@@ -30,7 +30,10 @@ func main() {
 func run() error {
 	var (
 		listenAddr  = flag.String("listen", ":8888", "listen address")
-		indexerURL  = flag.String("indexer", "https://indexer.gno.land/graphql/query", "tx-indexer GraphQL endpoint")
+		configPath  = flag.String("config", "", "config file path (JSON)")
+		networkFlag = flag.String("network", "", "single network ID (overrides config)")
+		indexerFlag = flag.String("indexer", "", "single network indexer URL (overrides config)")
+		rpcFlag     = flag.String("rpc", "", "single network RPC URL")
 		dbPath      = flag.String("db", "mygnoscan.db", "SQLite database path")
 		syncOnStart = flag.Bool("sync", true, "sync data from indexer on start")
 	)
@@ -43,51 +46,88 @@ func run() error {
 	}
 	defer db.Close()
 
-	// Initialize indexer client
-	client := NewIndexerClient(*indexerURL)
+	// Load config
+	var cfg *AppConfig
+	if *configPath != "" {
+		loaded, err := LoadConfig(*configPath)
+		if err != nil {
+			return err
+		}
+		cfg = loaded
+	} else if *indexerFlag != "" {
+		id := *networkFlag
+		if id == "" {
+			id = "default"
+		}
+		cfg = &AppConfig{Networks: []NetworkConfig{{ID: id, IndexerURL: *indexerFlag, RPCURL: *rpcFlag}}}
+	} else {
+		if _, serr := os.Stat("networks.json"); serr == nil {
+			if loaded, lerr := LoadConfig("networks.json"); lerr == nil {
+				cfg = loaded
+			}
+		}
+		if cfg == nil {
+			cfg = defaultConfig
+		}
+	}
+
+	// Create per-network clients
+	clients := make(map[string]*IndexerClient)
+	for _, n := range cfg.Networks {
+		clients[n.ID] = NewIndexerClient(n.IndexerURL)
+	}
 
 	// Initialize analyzer
 	analyzer := NewAnalyzer(db)
 
-	// Initialize syncer
-	syncer := NewSyncer(client, db, analyzer)
-
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Sync data from indexer
+	// Sync data from indexer (one goroutine per network)
 	if *syncOnStart {
-		go func() {
-			log.Println("starting initial sync...")
-			if err := syncer.SyncAll(ctx); err != nil {
-				log.Printf("sync error: %v", err)
-			}
-			log.Println("initial sync complete")
+		for _, n := range cfg.Networks {
+			go func(net NetworkConfig) {
+				syncer := NewSyncer(clients[net.ID], db, analyzer, net.ID)
+				log.Printf("[%s] starting initial sync...", net.ID)
+				if err := syncer.SyncAll(ctx); err != nil {
+					log.Printf("[%s] sync error: %v", net.ID, err)
+				}
+				log.Printf("[%s] initial sync complete", net.ID)
 
-			// Periodic re-sync every 30s
-			ticker := time.NewTicker(30 * time.Second)
-			defer ticker.Stop()
-			for {
-				select {
-				case <-ctx.Done():
-					return
-				case <-ticker.C:
-					if err := syncer.SyncAll(ctx); err != nil {
-						log.Printf("sync error: %v", err)
+				ticker := time.NewTicker(30 * time.Second)
+				defer ticker.Stop()
+				for {
+					select {
+					case <-ctx.Done():
+						return
+					case <-ticker.C:
+						if err := syncer.SyncAll(ctx); err != nil {
+							log.Printf("[%s] sync error: %v", net.ID, err)
+						}
 					}
 				}
-			}
-		}()
+			}(n)
+		}
 	}
 
 	// Set up API routes
-	api := NewAPI(db, client, analyzer)
+	api := NewAPI(db, clients, cfg.Networks, analyzer)
 	mux := http.NewServeMux()
 
 	// API routes
 	mux.HandleFunc("GET /api/version", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprintf(w, `{"git_hash":%q,"build_time":%q}`, gitHash, buildTime)
+	})
+	mux.HandleFunc("GET /api/networks", func(w http.ResponseWriter, r *http.Request) {
+		type netInfo struct {
+			ID string `json:"id"`
+		}
+		var nets []netInfo
+		for _, n := range cfg.Networks {
+			nets = append(nets, netInfo{n.ID})
+		}
+		jsonResponse(w, nets)
 	})
 	mux.HandleFunc("GET /api/stats", api.HandleStats)
 	mux.HandleFunc("GET /api/realms", api.HandleRealms)
@@ -111,9 +151,9 @@ func run() error {
 	mux.HandleFunc("GET /api/accounts", api.HandleAccounts)
 	mux.HandleFunc("GET /api/govdao", api.HandleGovDAO)
 
-	// SSE live feed (proxies tx-indexer WebSocket → SSE for browsers)
-	initLiveFeed(client)
-	mux.HandleFunc("GET /api/live", sseHandler())
+	// SSE live feed
+	initLiveFeeds(cfg.Networks, clients)
+	mux.HandleFunc("GET /api/live", liveFeedHandler())
 
 	// Frontend: SPA handler serves index.html for all non-API routes
 	frontendSub, err := fs.Sub(frontendFS, "frontend")
@@ -157,7 +197,13 @@ func run() error {
 		srv.Shutdown(context.Background())
 	}()
 
-	log.Printf("mygnoscan listening on %s", *listenAddr)
+	log.Printf("mygnoscan listening on %s (networks: %v)", *listenAddr, func() []string {
+		var ids []string
+		for _, n := range cfg.Networks {
+			ids = append(ids, n.ID)
+		}
+		return ids
+	}())
 	if err := srv.ListenAndServe(); err != http.ErrServerClosed {
 		return err
 	}

@@ -48,24 +48,24 @@ func (a *Analyzer) ExtractMsgRunImports(files []MemFile) []string {
 }
 
 // ProcessPackage analyzes a package and stores its dependency info.
-func (a *Analyzer) ProcessPackage(pkg *MemPackage, creator, txHash string, blockHeight int, success bool) error {
+func (a *Analyzer) ProcessPackage(network string, pkg *MemPackage, creator, txHash string, blockHeight int, success bool) error {
 	isRealm := strings.HasPrefix(pkg.Path, "gno.land/r/")
 
 	// Store package
-	if err := a.db.UpsertPackage(pkg.Path, pkg.Name, creator, txHash, blockHeight, isRealm, len(pkg.Files)); err != nil {
+	if err := a.db.UpsertPackage(network, pkg.Path, pkg.Name, creator, txHash, blockHeight, isRealm, len(pkg.Files)); err != nil {
 		return err
 	}
 
 	// Store files
 	for _, f := range pkg.Files {
-		if err := a.db.UpsertPackageFile(pkg.Path, f.Name, f.Body); err != nil {
+		if err := a.db.UpsertPackageFile(network, pkg.Path, f.Name, f.Body); err != nil {
 			return err
 		}
 	}
 
 	// Extract and store dependencies
 	imports := a.ExtractImports(pkg.Files)
-	if err := a.db.SetDependencies(pkg.Path, imports); err != nil {
+	if err := a.db.SetDependencies(network, pkg.Path, imports); err != nil {
 		return err
 	}
 
@@ -73,17 +73,17 @@ func (a *Analyzer) ProcessPackage(pkg *MemPackage, creator, txHash string, block
 }
 
 // ProcessCall stores a function call record.
-func (a *Analyzer) ProcessCall(txHash string, blockHeight int, caller, pkgPath, funcName string, success bool) error {
-	return a.db.InsertCall(txHash, blockHeight, caller, pkgPath, funcName, success)
+func (a *Analyzer) ProcessCall(network, txHash string, blockHeight int, caller, pkgPath, funcName string, success bool) error {
+	return a.db.InsertCall(network, txHash, blockHeight, caller, pkgPath, funcName, success)
 }
 
 // ProcessMsgRun stores MsgRun with full source for import analysis.
-func (a *Analyzer) ProcessMsgRun(txHash string, blockHeight int, caller string, files []MemFile, success bool) error {
+func (a *Analyzer) ProcessMsgRun(network, txHash string, blockHeight int, caller string, files []MemFile, success bool) error {
 	// Concatenate source for search
 	var source strings.Builder
 	for _, f := range files {
 		source.WriteString(f.Body)
 		source.WriteString("\n")
 	}
-	return a.db.InsertMsgRun(txHash, blockHeight, caller, source.String(), success)
+	return a.db.InsertMsgRun(network, txHash, blockHeight, caller, source.String(), success)
 }

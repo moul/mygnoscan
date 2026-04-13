@@ -14,19 +14,24 @@ import (
 // blocks/txs and fans out to browser clients via Server-Sent Events.
 
 type liveFeed struct {
-	mu         sync.RWMutex
-	clients    map[chan []byte]struct{}
-	running    bool
-	indexer    *IndexerClient
-	lastBlock  int
+	mu        sync.RWMutex
+	clients   map[chan []byte]struct{}
+	running   bool
+	indexer   *IndexerClient
+	networkID string
+	lastBlock int
 }
 
-var feed = &liveFeed{
-	clients: make(map[chan []byte]struct{}),
-}
+var liveFeeds = map[string]*liveFeed{}
 
-func initLiveFeed(client *IndexerClient) {
-	feed.indexer = client
+func initLiveFeeds(networks []NetworkConfig, clients map[string]*IndexerClient) {
+	for _, n := range networks {
+		liveFeeds[n.ID] = &liveFeed{
+			clients:   make(map[chan []byte]struct{}),
+			indexer:   clients[n.ID],
+			networkID: n.ID,
+		}
+	}
 }
 
 func (f *liveFeed) addClient() chan []byte {
@@ -36,6 +41,13 @@ func (f *liveFeed) addClient() chan []byte {
 	f.mu.Unlock()
 	f.ensureRunning()
 	return ch
+}
+
+func (f *liveFeed) addClientChan(ch chan []byte) {
+	f.mu.Lock()
+	f.clients[ch] = struct{}{}
+	f.mu.Unlock()
+	f.ensureRunning()
 }
 
 func (f *liveFeed) removeClient(ch chan []byte) {
@@ -67,7 +79,7 @@ func (f *liveFeed) ensureRunning() {
 }
 
 func (f *liveFeed) pollLoop() {
-	log.Println("live feed: started polling")
+	log.Printf("[%s] live feed: started polling", f.networkID)
 	for {
 		f.mu.RLock()
 		n := len(f.clients)
@@ -76,7 +88,7 @@ func (f *liveFeed) pollLoop() {
 			f.mu.Lock()
 			f.running = false
 			f.mu.Unlock()
-			log.Println("live feed: no clients, stopped")
+			log.Printf("[%s] live feed: no clients, stopped", f.networkID)
 			return
 		}
 
@@ -103,7 +115,8 @@ func (f *liveFeed) pollLoop() {
 						continue
 					}
 					data, _ := json.Marshal(map[string]any{
-						"type": "block",
+						"type":       "block",
+						"network_id": f.networkID,
 						"payload": map[string]any{
 							"data": map[string]any{"getBlocks": b},
 						},
@@ -120,7 +133,8 @@ func (f *liveFeed) pollLoop() {
 				for _, tx := range txs {
 					if tx.BlockHeight > f.lastBlock {
 						data, _ := json.Marshal(map[string]any{
-							"type": "tx",
+							"type":       "tx",
+							"network_id": f.networkID,
 							"payload": map[string]any{
 								"data": map[string]any{"getTransactions": tx},
 							},
@@ -137,7 +151,7 @@ func (f *liveFeed) pollLoop() {
 	}
 }
 
-func sseHandler() http.HandlerFunc {
+func liveFeedHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		flusher, ok := w.(http.Flusher)
 		if !ok {
@@ -150,8 +164,24 @@ func sseHandler() http.HandlerFunc {
 		w.Header().Set("Connection", "keep-alive")
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 
-		ch := feed.addClient()
-		defer feed.removeClient(ch)
+		network := r.URL.Query().Get("network")
+
+		ch := make(chan []byte, 64)
+
+		// Register in appropriate feeds
+		if network == "" || network == "all" {
+			for _, f := range liveFeeds {
+				f.addClientChan(ch)
+			}
+			defer func() {
+				for _, f := range liveFeeds {
+					f.removeClient(ch)
+				}
+			}()
+		} else if f, ok := liveFeeds[network]; ok {
+			f.addClientChan(ch)
+			defer f.removeClient(ch)
+		}
 
 		fmt.Fprintf(w, ": connected\n\n")
 		flusher.Flush()

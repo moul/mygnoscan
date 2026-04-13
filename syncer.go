@@ -6,13 +6,14 @@ import (
 )
 
 type Syncer struct {
-	client   *IndexerClient
-	db       *DB
-	analyzer *Analyzer
+	client    *IndexerClient
+	db        *DB
+	analyzer  *Analyzer
+	networkID string
 }
 
-func NewSyncer(client *IndexerClient, db *DB, analyzer *Analyzer) *Syncer {
-	return &Syncer{client: client, db: db, analyzer: analyzer}
+func NewSyncer(client *IndexerClient, db *DB, analyzer *Analyzer, networkID string) *Syncer {
+	return &Syncer{client: client, db: db, analyzer: analyzer, networkID: networkID}
 }
 
 // SyncAll fetches all data from the indexer and processes it.
@@ -46,20 +47,21 @@ func (s *Syncer) syncPackages(ctx context.Context) error {
 		for _, msg := range tx.Messages {
 			if msg.Value.Typename == "MsgAddPackage" && msg.Value.Package != nil {
 				if err := s.analyzer.ProcessPackage(
+					s.networkID,
 					msg.Value.Package,
 					msg.Value.Creator,
 					tx.Hash,
 					tx.BlockHeight,
 					tx.Success,
 				); err != nil {
-					log.Printf("process package %s: %v", msg.Value.Package.Path, err)
+					log.Printf("[%s] process package %s: %v", s.networkID, msg.Value.Package.Path, err)
 					continue
 				}
 				count++
 			}
 		}
 	}
-	log.Printf("synced %d packages", count)
+	log.Printf("[%s] synced %d packages", s.networkID, count)
 	return nil
 }
 
@@ -75,32 +77,34 @@ func (s *Syncer) syncCalls(ctx context.Context) error {
 			switch msg.Value.Typename {
 			case "MsgCall":
 				if err := s.analyzer.ProcessCall(
+					s.networkID,
 					tx.Hash, tx.BlockHeight,
 					msg.Value.Caller,
 					msg.Value.PkgPath,
 					msg.Value.Func,
 					tx.Success,
 				); err != nil {
-					log.Printf("process call: %v", err)
+					log.Printf("[%s] process call: %v", s.networkID, err)
 					continue
 				}
 				callCount++
 			case "BankMsgSend":
 				if err := s.db.InsertBankSend(
+					s.networkID,
 					tx.Hash, tx.BlockHeight,
 					msg.Value.FromAddress,
 					msg.Value.ToAddress,
 					msg.Value.Amount,
 					tx.Success,
 				); err != nil {
-					log.Printf("process send: %v", err)
+					log.Printf("[%s] process send: %v", s.networkID, err)
 					continue
 				}
 				sendCount++
 			}
 		}
 	}
-	log.Printf("synced %d calls, %d sends", callCount, sendCount)
+	log.Printf("[%s] synced %d calls, %d sends", s.networkID, callCount, sendCount)
 	return nil
 }
 
@@ -115,18 +119,19 @@ func (s *Syncer) syncMsgRuns(ctx context.Context) error {
 		for _, msg := range tx.Messages {
 			if msg.Value.Typename == "MsgRun" && msg.Value.Package != nil {
 				if err := s.analyzer.ProcessMsgRun(
+					s.networkID,
 					tx.Hash, tx.BlockHeight,
 					msg.Value.Caller,
 					msg.Value.Package.Files,
 					tx.Success,
 				); err != nil {
-					log.Printf("process msgrun: %v", err)
+					log.Printf("[%s] process msgrun: %v", s.networkID, err)
 					continue
 				}
 				count++
 			}
 		}
 	}
-	log.Printf("synced %d msg_runs", count)
+	log.Printf("[%s] synced %d msg_runs", s.networkID, count)
 	return nil
 }

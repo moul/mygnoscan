@@ -106,6 +106,14 @@ footer { border-top: 1px solid var(--border); padding: 16px 0; margin-top: 40px;
 footer .container { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; }
 footer a { color: var(--fg2); }
 footer a:hover { color: var(--accent); }
+/* Network selector */
+.network-select { background: var(--bg2); border: 1px solid var(--border); color: var(--fg); padding: 4px 8px; border-radius: 4px; font-family: var(--mono); font-size: 12px; cursor: pointer; outline: none; }
+.network-select:focus { border-color: var(--accent); }
+/* Network badges */
+.net-badge { display: inline-block; padding: 1px 5px; border-radius: 2px; font-size: 10px; font-weight: bold; margin-left: 4px; vertical-align: middle; }
+.net-gnoland1 { background: rgba(78,205,196,0.12); color: var(--accent); border: 1px solid rgba(78,205,196,0.25); }
+.net-test12 { background: rgba(177,148,255,0.12); color: #b194ff; border: 1px solid rgba(177,148,255,0.25); }
+.net-default { background: rgba(136,136,136,0.12); color: var(--fg2); border: 1px solid rgba(136,136,136,0.25); }
 /* Live mode */
 .live-btn { background: var(--bg2); border: 1px solid var(--border); color: var(--fg2); padding: 4px 10px; border-radius: 4px; font-family: var(--mono); font-size: 12px; cursor: pointer; display: flex; align-items: center; gap: 6px; }
 .live-btn:hover { border-color: var(--accent); }
@@ -146,6 +154,7 @@ footer a:hover { color: var(--accent); }
       <input type="text" id="search-input" placeholder="search...">
       <div id="search-results"></div>
     </div>
+    <select class="network-select" id="network-select" onchange="onNetworkChange()"></select>
     <button class="live-btn" id="live-toggle" onclick="toggleLive()"><span class="live-dot"></span><span id="live-label"> live</span></button>
   </div>
 </header>
@@ -508,7 +517,45 @@ function linkify(text) {
   return span;
 }
 
-async function api(path) { const r = await fetch('/api/' + path); if (!r.ok) throw new Error(await r.text()); return r.json(); }
+// --- Network management ---
+function getNetwork() { return localStorage.getItem('mygnoscan-network') || 'all'; }
+function setNetwork(n) { localStorage.setItem('mygnoscan-network', n); }
+function onNetworkChange() {
+  const sel = document.getElementById('network-select');
+  setNetwork(sel.value);
+  route();
+}
+function netBadgeEl(networkId) {
+  if (!networkId) return document.createTextNode('');
+  const span = document.createElement('span');
+  span.className = 'net-badge net-' + networkId;
+  span.textContent = networkId;
+  return span;
+}
+async function initNetworkSelector() {
+  try {
+    const nets = await fetch('/api/networks').then(r => r.json());
+    const sel = document.getElementById('network-select');
+    sel.innerHTML = '';
+    const all = document.createElement('option');
+    all.value = 'all'; all.textContent = 'all networks';
+    sel.appendChild(all);
+    for (const n of nets) {
+      const opt = document.createElement('option');
+      opt.value = n.id; opt.textContent = n.id;
+      sel.appendChild(opt);
+    }
+    sel.value = getNetwork();
+  } catch(e) { console.error('network selector:', e); }
+}
+
+async function api(path) {
+  const sep = path.includes('?') ? '&' : '?';
+  const url = '/api/' + path + sep + 'network=' + getNetwork();
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
 
 // --- Navigation (History API) ---
 function navigate(path, replace) {
@@ -587,8 +634,10 @@ async function loadHome() {
     for (const b of (Array.isArray(blocksData) ? blocksData : [])) blockTime[b.height] = b.time;
     const tbody = clear('latest-realms');
     for (const r of (realmsData?.items || [])) {
+      const pathTd = el('td', {}, realmPathEl(r.path));
+      if (r.network) pathTd.appendChild(netBadgeEl(r.network));
       tbody.appendChild(el('tr', {},
-        el('td', {}, realmPathEl(r.path)),
+        pathTd,
         el('td', {}, addrLink(r.creator)),
         el('td', {}, String(r.num_files)),
         el('td', {}, blockLink(r.block_height))
@@ -626,8 +675,10 @@ async function loadRealms(page) {
     }
     const list = clear('realms-list');
     for (const r of (data.items || [])) {
+      const pathTd = el('td', {}, realmPathEl(r.path));
+      if (r.network) pathTd.appendChild(netBadgeEl(r.network));
       list.appendChild(el('tr', {},
-        el('td', {}, realmPathEl(r.path)),
+        pathTd,
         el('td', {}, addrLink(r.creator)),
         el('td', {}, blockLink(r.block_height)), el('td', {}, String(r.num_files))
       ));
@@ -651,8 +702,10 @@ async function loadPackages(page) {
     }
     const list = clear('packages-list');
     for (const p of (data.items || [])) {
+      const pathTd = el('td', {}, realmPathEl(p.path));
+      if (p.network) pathTd.appendChild(netBadgeEl(p.network));
       list.appendChild(el('tr', {},
-        el('td', {}, realmPathEl(p.path)),
+        pathTd,
         el('td', {}, addrLink(p.creator)),
         el('td', {}, blockLink(p.block_height)), el('td', {}, String(p.num_files))
       ));
@@ -760,9 +813,11 @@ function renderTxRows() {
   }
   for (const tx of page) {
     const msg = tx.messages?.[0];
+    const blockTd = el('td', {}, blockLink(tx.block_height));
+    if (tx.network) blockTd.appendChild(netBadgeEl(tx.network));
     list.appendChild(el('tr', {},
       el('td', {}, txLink(tx.hash, tx.block_height)),
-      el('td', {}, blockLink(tx.block_height)),
+      blockTd,
       el('td', {}, typeBadge(msg?.value?.__typename)),
       el('td', {}, txDetailEl(msg)),
       el('td', {}, statusBadge(tx.success))
@@ -2270,6 +2325,9 @@ document.addEventListener('mouseout', (e) => {
   document.querySelectorAll('[data-hl="' + CSS.escape(val) + '"]').forEach(el => el.classList.remove('hl-active'));
 });
 
+// --- Init ---
+initNetworkSelector();
+
 // --- Footer version ---
 api('version').then(v => {
   const el = document.getElementById('footer-hash');
@@ -2325,7 +2383,8 @@ function startLive() {
     try {
       const msg = JSON.parse(evt.data);
       if (msg.type === 'tx' && msg.payload?.data?.getTransactions) {
-        onLiveTx(msg.payload.data.getTransactions);
+        const tx = { ...msg.payload.data.getTransactions, network: msg.network_id };
+        onLiveTx(tx);
       } else if (msg.type === 'block' && msg.payload?.data?.getBlocks) {
         onLiveBlock(msg.payload.data.getBlocks);
       }
@@ -2375,8 +2434,10 @@ function onLiveTx(tx) {
   const tbody = document.getElementById('recent-txs');
   if (tbody && document.getElementById('view-home')?.classList.contains('active')) {
     const msg = tx.messages?.[0];
+    const blockTd = el('td', {}, blockLink(tx.block_height));
+    if (tx.network) blockTd.appendChild(netBadgeEl(tx.network));
     const tr = el('tr', { className: 'live-new' },
-      el('td', {}, blockLink(tx.block_height)),
+      blockTd,
       el('td', {}, typeBadge(msg?.value?.__typename)),
       el('td', {}, txDetailEl(msg)),
       el('td', {}, statusBadge(tx.success)),

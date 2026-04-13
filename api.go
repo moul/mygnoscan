@@ -15,12 +15,13 @@ import (
 
 type API struct {
 	db       *DB
-	client   *IndexerClient
+	clients  map[string]*IndexerClient
+	networks []NetworkConfig
 	analyzer *Analyzer
 }
 
-func NewAPI(db *DB, client *IndexerClient, analyzer *Analyzer) *API {
-	return &API{db: db, client: client, analyzer: analyzer}
+func NewAPI(db *DB, clients map[string]*IndexerClient, networks []NetworkConfig, analyzer *Analyzer) *API {
+	return &API{db: db, clients: clients, networks: networks, analyzer: analyzer}
 }
 
 func jsonResponse(w http.ResponseWriter, data any) {
@@ -34,60 +35,102 @@ func jsonError(w http.ResponseWriter, msg string, code int) {
 	json.NewEncoder(w).Encode(map[string]string{"error": msg})
 }
 
+// networkParam reads ?network from request. Returns "" for "all" (no filter), or specific network ID.
+func (a *API) networkParam(r *http.Request) string {
+	n := r.URL.Query().Get("network")
+	if n == "" || n == "all" {
+		return ""
+	}
+	return n
+}
+
+// clientFor returns the IndexerClient for a specific network, or the first available one if not found.
+func (a *API) clientFor(network string) *IndexerClient {
+	if network != "" {
+		if c, ok := a.clients[network]; ok {
+			return c
+		}
+	}
+	// fallback: first client
+	for _, c := range a.clients {
+		return c
+	}
+	return nil
+}
+
+// rpcURLFor returns the RPC URL for a network (or first network with an RPC URL).
+func (a *API) rpcURLFor(network string) string {
+	for _, n := range a.networks {
+		if network == "" || n.ID == network {
+			if n.RPCURL != "" {
+				return n.RPCURL
+			}
+		}
+	}
+	return ""
+}
+
 func (a *API) HandleStats(w http.ResponseWriter, r *http.Request) {
-	stats, err := a.db.GetStats()
+	network := a.networkParam(r)
+	stats, err := a.db.GetStats(network)
 	if err != nil {
 		jsonError(w, err.Error(), 500)
 		return
 	}
 
 	// Also get latest block from indexer
-	height, err := a.client.LatestBlockHeight(r.Context())
-	if err == nil {
-		stats.LatestBlock = height
+	client := a.clientFor(network)
+	if client != nil {
+		height, err := client.LatestBlockHeight(r.Context())
+		if err == nil {
+			stats.LatestBlock = height
+		}
 	}
 
 	jsonResponse(w, stats)
 }
 
 func (a *API) HandleRealms(w http.ResponseWriter, r *http.Request) {
+	network := a.networkParam(r)
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 	offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
 	if limit == 0 {
 		limit = 50
 	}
 
-	realms, err := a.db.ListPackages(true, limit, offset)
+	realms, err := a.db.ListPackages(network, true, limit, offset)
 	if err != nil {
 		jsonError(w, err.Error(), 500)
 		return
 	}
-	total, _ := a.db.CountPackages(true)
+	total, _ := a.db.CountPackages(network, true)
 	jsonResponse(w, map[string]any{"items": realms, "total": total})
 }
 
 func (a *API) HandlePackages(w http.ResponseWriter, r *http.Request) {
+	network := a.networkParam(r)
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 	offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
 	if limit == 0 {
 		limit = 50
 	}
 
-	pkgs, err := a.db.ListPackages(false, limit, offset)
+	pkgs, err := a.db.ListPackages(network, false, limit, offset)
 	if err != nil {
 		jsonError(w, err.Error(), 500)
 		return
 	}
-	total, _ := a.db.CountPackages(false)
+	total, _ := a.db.CountPackages(network, false)
 	jsonResponse(w, map[string]any{"items": pkgs, "total": total})
 }
 
 func (a *API) HandleRealm(w http.ResponseWriter, r *http.Request) {
+	network := a.networkParam(r)
 	path := "gno.land/" + r.PathValue("path")
 	// Remove trailing slash
 	path = strings.TrimRight(path, "/")
 
-	detail, err := a.db.GetPackageDetail(path)
+	detail, err := a.db.GetPackageDetail(network, path)
 	if err != nil {
 		jsonError(w, "package not found: "+path, 404)
 		return
@@ -96,37 +139,118 @@ func (a *API) HandleRealm(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) HandleTx(w http.ResponseWriter, r *http.Request) {
+	network := a.networkParam(r)
 	hash := r.PathValue("hash")
-	tx, err := a.client.GetTransactionByHash(r.Context(), hash)
-	if err != nil {
-		jsonError(w, err.Error(), 404)
-		return
-	}
+
 	type txDetail struct {
 		*Transaction
 		BlockTime string `json:"block_time,omitempty"`
 		ChainID   string `json:"chain_id,omitempty"`
+		Network   string `json:"network,omitempty"`
 	}
-	resp := txDetail{Transaction: tx}
-	if block, berr := a.client.GetBlock(r.Context(), tx.BlockHeight); berr == nil && block != nil {
-		resp.BlockTime = block.Time
-		resp.ChainID = block.ChainID
+
+	tryClient := func(netID string, client *IndexerClient) (*txDetail, error) {
+		tx, err := client.GetTransactionByHash(r.Context(), hash)
+		if err != nil {
+			return nil, err
+		}
+		resp := &txDetail{Transaction: tx, Network: netID}
+		if block, berr := client.GetBlock(r.Context(), tx.BlockHeight); berr == nil && block != nil {
+			resp.BlockTime = block.Time
+			resp.ChainID = block.ChainID
+		}
+		return resp, nil
 	}
-	jsonResponse(w, resp)
+
+	if network != "" {
+		client := a.clientFor(network)
+		if client == nil {
+			jsonError(w, "network not found", 404)
+			return
+		}
+		resp, err := tryClient(network, client)
+		if err != nil {
+			jsonError(w, err.Error(), 404)
+			return
+		}
+		jsonResponse(w, resp)
+		return
+	}
+
+	// Try all clients
+	for _, n := range a.networks {
+		client := a.clients[n.ID]
+		if client == nil {
+			continue
+		}
+		if resp, err := tryClient(n.ID, client); err == nil {
+			jsonResponse(w, resp)
+			return
+		}
+	}
+	jsonError(w, "transaction not found", 404)
 }
 
 func (a *API) HandleTxs(w http.ResponseWriter, r *http.Request) {
+	network := a.networkParam(r)
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 	offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
-	txs, err := a.client.GetRecentTransactions(r.Context(), 0)
-	if err != nil {
-		jsonError(w, err.Error(), 500)
+
+	if network != "" {
+		client := a.clientFor(network)
+		if client == nil {
+			jsonError(w, "network not found", 404)
+			return
+		}
+		txs, err := client.GetRecentTransactions(r.Context(), 0)
+		if err != nil {
+			jsonError(w, err.Error(), 500)
+			return
+		}
+		total := len(txs)
+		if limit <= 0 {
+			jsonResponse(w, map[string]any{"items": txs, "total": total})
+			return
+		}
+		if offset > total {
+			offset = total
+		}
+		end := offset + limit
+		if end > total {
+			end = total
+		}
+		jsonResponse(w, map[string]any{"items": txs[offset:end], "total": total})
 		return
 	}
-	total := len(txs)
-	// limit=0 means return all
+
+	// Fan-out to all clients, merge and sort
+	type netTx struct {
+		Transaction
+		Network string `json:"network,omitempty"`
+	}
+	var merged []netTx
+	seen := make(map[string]bool)
+	for _, n := range a.networks {
+		client := a.clients[n.ID]
+		if client == nil {
+			continue
+		}
+		txs, err := client.GetRecentTransactions(r.Context(), 0)
+		if err != nil {
+			continue
+		}
+		for _, tx := range txs {
+			if seen[tx.Hash] {
+				continue
+			}
+			seen[tx.Hash] = true
+			merged = append(merged, netTx{Transaction: tx, Network: n.ID})
+		}
+	}
+	sort.Slice(merged, func(i, j int) bool { return merged[i].BlockHeight > merged[j].BlockHeight })
+	total := len(merged)
 	if limit <= 0 {
-		jsonResponse(w, map[string]any{"items": txs, "total": total})
+		jsonResponse(w, map[string]any{"items": merged, "total": total})
 		return
 	}
 	if offset > total {
@@ -136,24 +260,27 @@ func (a *API) HandleTxs(w http.ResponseWriter, r *http.Request) {
 	if end > total {
 		end = total
 	}
-	jsonResponse(w, map[string]any{
-		"items": txs[offset:end],
-		"total": total,
-	})
+	jsonResponse(w, map[string]any{"items": merged[offset:end], "total": total})
 }
 
 func (a *API) HandleAddress(w http.ResponseWriter, r *http.Request) {
+	network := a.networkParam(r)
 	addr := r.PathValue("addr")
 
 	// Get transactions for this address
-	txs, err := a.client.GetTransactionsByAddress(r.Context(), addr)
+	client := a.clientFor(network)
+	if client == nil {
+		jsonError(w, "no client available", 500)
+		return
+	}
+	txs, err := client.GetTransactionsByAddress(r.Context(), addr)
 	if err != nil {
 		jsonError(w, err.Error(), 500)
 		return
 	}
 
 	// Get packages created by this address
-	pkgs, err := a.db.Search(addr)
+	pkgs, err := a.db.Search(network, addr)
 	if err != nil {
 		jsonError(w, err.Error(), 500)
 		return
@@ -168,7 +295,8 @@ func (a *API) HandleAddress(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Bank balance via RPC
-	balance := fetchBalance(r.Context(), addr)
+	rpcURL := a.rpcURLFor(network)
+	balance := fetchBalance(r.Context(), addr, rpcURL)
 
 	jsonResponse(w, map[string]any{
 		"address":      addr,
@@ -180,13 +308,14 @@ func (a *API) HandleAddress(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) HandleSearch(w http.ResponseWriter, r *http.Request) {
+	network := a.networkParam(r)
 	q := r.URL.Query().Get("q")
 	if q == "" {
 		jsonError(w, "missing q parameter", 400)
 		return
 	}
 
-	results, err := a.db.Search(q)
+	results, err := a.db.Search(network, q)
 	if err != nil {
 		jsonError(w, err.Error(), 500)
 		return
@@ -195,8 +324,14 @@ func (a *API) HandleSearch(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) HandleAllEvents(w http.ResponseWriter, r *http.Request) {
+	network := a.networkParam(r)
+	client := a.clientFor(network)
+	if client == nil {
+		jsonError(w, "no client available", 500)
+		return
+	}
 	// Recent transactions that have GnoEvents
-	txs, err := a.client.GetRecentTransactionsWithEvents(r.Context())
+	txs, err := client.GetRecentTransactionsWithEvents(r.Context())
 	if err != nil {
 		jsonError(w, err.Error(), 500)
 		return
@@ -231,19 +366,25 @@ func (a *API) HandleAllEvents(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) HandleEvents(w http.ResponseWriter, r *http.Request) {
+	network := a.networkParam(r)
+	client := a.clientFor(network)
+	if client == nil {
+		jsonError(w, "no client available", 500)
+		return
+	}
 	path := "gno.land/" + r.PathValue("path")
 	path = strings.TrimRight(path, "/")
-	txs, err := a.client.GetEventsByPkgPath(r.Context(), path)
+	txs, err := client.GetEventsByPkgPath(r.Context(), path)
 	if err != nil {
 		jsonError(w, err.Error(), 500)
 		return
 	}
 	// Extract just the events for this path
 	type EventResult struct {
-		TxHash      string     `json:"tx_hash"`
-		BlockHeight int        `json:"block_height"`
-		Success     bool       `json:"success"`
-		Events      []TxEvent  `json:"events"`
+		TxHash      string    `json:"tx_hash"`
+		BlockHeight int       `json:"block_height"`
+		Success     bool      `json:"success"`
+		Events      []TxEvent `json:"events"`
 	}
 	var results []EventResult
 	for _, tx := range txs {
@@ -269,11 +410,17 @@ func (a *API) HandleEvents(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) HandleBlocks(w http.ResponseWriter, r *http.Request) {
+	network := a.networkParam(r)
+	client := a.clientFor(network)
+	if client == nil {
+		jsonError(w, "no client available", 500)
+		return
+	}
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 	if limit == 0 {
 		limit = 50
 	}
-	blocks, err := a.client.GetRecentBlocks(r.Context(), limit)
+	blocks, err := client.GetRecentBlocks(r.Context(), limit)
 	if err != nil {
 		jsonError(w, err.Error(), 500)
 		return
@@ -282,18 +429,24 @@ func (a *API) HandleBlocks(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) HandleBlock(w http.ResponseWriter, r *http.Request) {
+	network := a.networkParam(r)
+	client := a.clientFor(network)
+	if client == nil {
+		jsonError(w, "no client available", 500)
+		return
+	}
 	height, err := strconv.Atoi(r.PathValue("height"))
 	if err != nil {
 		jsonError(w, "invalid block height", 400)
 		return
 	}
-	block, err := a.client.GetBlock(r.Context(), height)
+	block, err := client.GetBlock(r.Context(), height)
 	if err != nil {
 		jsonError(w, err.Error(), 404)
 		return
 	}
 	// Also get transactions in this block
-	txs, _ := a.client.GetTransactionsByBlock(r.Context(), height)
+	txs, _ := client.GetTransactionsByBlock(r.Context(), height)
 	jsonResponse(w, map[string]any{
 		"block":        block,
 		"transactions": txs,
@@ -301,8 +454,14 @@ func (a *API) HandleBlock(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) HandleValidators(w http.ResponseWriter, r *http.Request) {
+	network := a.networkParam(r)
+	client := a.clientFor(network)
+	if client == nil {
+		jsonError(w, "no client available", 500)
+		return
+	}
 	// Get validator registrations from gno.land/r/gnops/valopers
-	txs, err := a.client.GetTransactionsByPkgPath(r.Context(), "gno.land/r/gnops/valopers")
+	txs, err := client.GetTransactionsByPkgPath(r.Context(), "gno.land/r/gnops/valopers")
 	if err != nil {
 		jsonError(w, err.Error(), 500)
 		return
@@ -311,8 +470,9 @@ func (a *API) HandleValidators(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) HandleTokens(w http.ResponseWriter, r *http.Request) {
+	network := a.networkParam(r)
 	// Get all packages that look like token contracts (import grc20)
-	tokens, err := a.db.GetTokenPackages()
+	tokens, err := a.db.GetTokenPackages(network)
 	if err != nil {
 		jsonError(w, err.Error(), 500)
 		return
@@ -321,7 +481,8 @@ func (a *API) HandleTokens(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) HandleAccounts(w http.ResponseWriter, r *http.Request) {
-	accounts, err := a.db.GetActiveAccounts()
+	network := a.networkParam(r)
+	accounts, err := a.db.GetActiveAccounts(network)
 	if err != nil {
 		jsonError(w, err.Error(), 500)
 		return
@@ -330,7 +491,8 @@ func (a *API) HandleAccounts(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) HandleBankStats(w http.ResponseWriter, r *http.Request) {
-	stats, err := a.db.GetBankStats()
+	network := a.networkParam(r)
+	stats, err := a.db.GetBankStats(network)
 	if err != nil {
 		jsonError(w, err.Error(), 500)
 		return
@@ -339,7 +501,13 @@ func (a *API) HandleBankStats(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) HandleGovDAO(w http.ResponseWriter, r *http.Request) {
-	txs, err := a.client.GetGovDAOTransactions(r.Context())
+	network := a.networkParam(r)
+	client := a.clientFor(network)
+	if client == nil {
+		jsonError(w, "no client available", 500)
+		return
+	}
+	txs, err := client.GetGovDAOTransactions(r.Context())
 	if err != nil {
 		jsonError(w, err.Error(), 500)
 		return
@@ -348,6 +516,7 @@ func (a *API) HandleGovDAO(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) HandleDeps(w http.ResponseWriter, r *http.Request) {
+	network := a.networkParam(r)
 	path := "gno.land/" + r.PathValue("path")
 	path = strings.TrimRight(path, "/")
 	direction := r.URL.Query().Get("dir") // "imports" or "dependents"
@@ -357,9 +526,9 @@ func (a *API) HandleDeps(w http.ResponseWriter, r *http.Request) {
 
 	switch direction {
 	case "dependents":
-		graph, err = a.db.GetReverseGraph(path)
+		graph, err = a.db.GetReverseGraph(network, path)
 	default:
-		graph, err = a.db.GetDependencyGraph(path)
+		graph, err = a.db.GetDependencyGraph(network, path)
 	}
 
 	if err != nil {
@@ -370,11 +539,17 @@ func (a *API) HandleDeps(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) HandleStorage(w http.ResponseWriter, r *http.Request) {
+	network := a.networkParam(r)
+	client := a.clientFor(network)
+	if client == nil {
+		jsonError(w, "no client available", 500)
+		return
+	}
 	path := "gno.land/" + r.PathValue("path")
 	path = strings.TrimRight(path, "/")
 
-	storageTxs, _ := a.client.GetStorageEvents(r.Context(), path)
-	gasTxs, _ := a.client.GetGasUsageForRealm(r.Context(), path)
+	storageTxs, _ := client.GetStorageEvents(r.Context(), path)
+	gasTxs, _ := client.GetGasUsageForRealm(r.Context(), path)
 
 	// Aggregate storage
 	var totalBytesDeposit, totalBytesUnlock int
@@ -467,7 +642,13 @@ func (a *API) HandleStorage(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) HandleGas(w http.ResponseWriter, r *http.Request) {
-	txs, err := a.client.GetRecentTransactions(r.Context(), 0)
+	network := a.networkParam(r)
+	client := a.clientFor(network)
+	if client == nil {
+		jsonError(w, "no client available", 500)
+		return
+	}
+	txs, err := client.GetRecentTransactions(r.Context(), 0)
 	if err != nil {
 		jsonError(w, err.Error(), 500)
 		return
@@ -589,7 +770,7 @@ func (a *API) HandleGas(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Total source bytes from DB
-	totalStorageBytes := a.db.TotalSourceBytes()
+	totalStorageBytes := a.db.TotalSourceBytes(network)
 
 	avgGasPerTx := 0
 	if len(txs) > 0 {
@@ -597,21 +778,22 @@ func (a *API) HandleGas(w http.ResponseWriter, r *http.Request) {
 	}
 
 	jsonResponse(w, map[string]any{
-		"total_txs":        len(txs),
-		"total_gas_used":   totalGasUsed,
-		"total_gas_wanted": totalGasWanted,
-		"total_fees":       totalFees,
-		"avg_gas_per_tx":   avgGasPerTx,
-		"success_count":    successCount,
-		"fail_count":       failCount,
+		"total_txs":          len(txs),
+		"total_gas_used":     totalGasUsed,
+		"total_gas_wanted":   totalGasWanted,
+		"total_fees":         totalFees,
+		"avg_gas_per_tx":     avgGasPerTx,
+		"success_count":      successCount,
+		"fail_count":         failCount,
 		"total_source_bytes": totalStorageBytes,
-		"top_realms":       topRealms,
-		"top_txs":          topTxs,
+		"top_realms":         topRealms,
+		"top_txs":            topTxs,
 	})
 }
 
 func (a *API) HandleAnalytics(w http.ResponseWriter, r *http.Request) {
-	analytics, err := a.db.GetAnalytics()
+	network := a.networkParam(r)
+	analytics, err := a.db.GetAnalytics(network)
 	if err != nil {
 		jsonError(w, err.Error(), 500)
 		return
@@ -620,10 +802,13 @@ func (a *API) HandleAnalytics(w http.ResponseWriter, r *http.Request) {
 }
 
 // fetchBalance queries the gno.land RPC for bank balance.
-func fetchBalance(ctx context.Context, addr string) string {
-	rpcURL := fmt.Sprintf("https://rpc.gno.land/abci_query?path=%%22bank/balances/%s%%22&data=0x", addr)
+func fetchBalance(ctx context.Context, addr, rpcURL string) string {
+	if rpcURL == "" {
+		return ""
+	}
+	url := fmt.Sprintf("%s/abci_query?path=%%22bank/balances/%s%%22&data=0x", rpcURL, addr)
 	client := &http.Client{Timeout: 5 * time.Second}
-	req, err := http.NewRequestWithContext(ctx, "GET", rpcURL, nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
 		return ""
 	}
