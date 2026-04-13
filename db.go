@@ -339,6 +339,7 @@ type PackageInfo struct {
 	Name        string `json:"name"`
 	Creator     string `json:"creator"`
 	BlockHeight int    `json:"block_height"`
+	BlockTime   string `json:"block_time,omitempty"`
 	TxHash      string `json:"tx_hash"`
 	IsRealm     bool   `json:"is_realm"`
 	NumFiles    int    `json:"num_files"`

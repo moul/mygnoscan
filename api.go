@@ -35,6 +35,33 @@ func jsonError(w http.ResponseWriter, msg string, code int) {
 	json.NewEncoder(w).Encode(map[string]string{"error": msg})
 }
 
+// stampPackageTimes fetches block times for packages and fills BlockTime.
+func stampPackageTimes(ctx context.Context, client *IndexerClient, pkgs []PackageInfo) {
+	if len(pkgs) == 0 {
+		return
+	}
+	minH, maxH := pkgs[0].BlockHeight, pkgs[0].BlockHeight
+	for _, p := range pkgs {
+		if p.BlockHeight < minH {
+			minH = p.BlockHeight
+		}
+		if p.BlockHeight > maxH {
+			maxH = p.BlockHeight
+		}
+	}
+	blocks, err := client.GetBlocksInRange(ctx, minH, maxH)
+	if err != nil {
+		return
+	}
+	bt := make(map[int]string, len(blocks))
+	for _, b := range blocks {
+		bt[b.Height] = b.Time
+	}
+	for i := range pkgs {
+		pkgs[i].BlockTime = bt[pkgs[i].BlockHeight]
+	}
+}
+
 // stampBlockTimes fetches block times for the given transactions and sets BlockTime on each.
 func stampBlockTimes(ctx context.Context, client *IndexerClient, txs []Transaction) {
 	if len(txs) == 0 {
@@ -117,38 +144,66 @@ func (a *API) HandleStats(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, stats)
 }
 
-func (a *API) HandleRealms(w http.ResponseWriter, r *http.Request) {
+func (a *API) handleListPackages(w http.ResponseWriter, r *http.Request, realmOnly bool) {
 	network := a.networkParam(r)
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 	offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
 	if limit == 0 {
 		limit = 50
 	}
+	total, _ := a.db.CountPackages(network, realmOnly)
 
-	realms, err := a.db.ListPackages(network, true, limit, offset)
-	if err != nil {
-		jsonError(w, err.Error(), 500)
+	if network != "" {
+		items, err := a.db.ListPackages(network, realmOnly, limit, offset)
+		if err != nil {
+			jsonError(w, err.Error(), 500)
+			return
+		}
+		jsonResponse(w, map[string]any{"items": items, "total": total})
 		return
 	}
-	total, _ := a.db.CountPackages(network, true)
-	jsonResponse(w, map[string]any{"items": realms, "total": total})
+
+	// All networks: fetch per-network, stamp block times, merge, sort by time
+	var merged []PackageInfo
+	for _, n := range a.networks {
+		items, err := a.db.ListPackages(n.ID, realmOnly, limit+offset, 0)
+		if err != nil {
+			continue
+		}
+		if client := a.clients[n.ID]; client != nil {
+			stampPackageTimes(r.Context(), client, items)
+		}
+		merged = append(merged, items...)
+	}
+	sort.Slice(merged, func(i, j int) bool {
+		if merged[i].BlockTime != "" && merged[j].BlockTime != "" {
+			return merged[i].BlockTime > merged[j].BlockTime
+		}
+		if merged[i].BlockTime != "" {
+			return true
+		}
+		if merged[j].BlockTime != "" {
+			return false
+		}
+		return merged[i].BlockHeight > merged[j].BlockHeight
+	})
+	if offset >= len(merged) {
+		jsonResponse(w, map[string]any{"items": []PackageInfo{}, "total": total})
+		return
+	}
+	end := offset + limit
+	if end > len(merged) {
+		end = len(merged)
+	}
+	jsonResponse(w, map[string]any{"items": merged[offset:end], "total": total})
+}
+
+func (a *API) HandleRealms(w http.ResponseWriter, r *http.Request) {
+	a.handleListPackages(w, r, true)
 }
 
 func (a *API) HandlePackages(w http.ResponseWriter, r *http.Request) {
-	network := a.networkParam(r)
-	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
-	if limit == 0 {
-		limit = 50
-	}
-
-	pkgs, err := a.db.ListPackages(network, false, limit, offset)
-	if err != nil {
-		jsonError(w, err.Error(), 500)
-		return
-	}
-	total, _ := a.db.CountPackages(network, false)
-	jsonResponse(w, map[string]any{"items": pkgs, "total": total})
+	a.handleListPackages(w, r, false)
 }
 
 func (a *API) HandleRealm(w http.ResponseWriter, r *http.Request) {
@@ -475,21 +530,55 @@ func (a *API) HandleEvents(w http.ResponseWriter, r *http.Request) {
 
 func (a *API) HandleBlocks(w http.ResponseWriter, r *http.Request) {
 	network := a.networkParam(r)
-	client := a.clientFor(network)
-	if client == nil {
-		jsonError(w, "no client available", 500)
-		return
-	}
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 	if limit == 0 {
 		limit = 50
 	}
-	blocks, err := client.GetRecentBlocks(r.Context(), limit)
-	if err != nil {
-		jsonError(w, err.Error(), 500)
+
+	if network != "" {
+		client := a.clientFor(network)
+		if client == nil {
+			jsonError(w, "no client available", 500)
+			return
+		}
+		blocks, err := client.GetRecentBlocks(r.Context(), limit)
+		if err != nil {
+			jsonError(w, err.Error(), 500)
+			return
+		}
+		jsonResponse(w, blocks)
 		return
 	}
-	jsonResponse(w, blocks)
+
+	// Fan-out: merge blocks from all networks, sort by time
+	type netBlock struct {
+		Block
+		Network string `json:"network,omitempty"`
+	}
+	var merged []netBlock
+	for _, n := range a.networks {
+		client := a.clients[n.ID]
+		if client == nil {
+			continue
+		}
+		blocks, err := client.GetRecentBlocks(r.Context(), limit)
+		if err != nil {
+			continue
+		}
+		for _, b := range blocks {
+			merged = append(merged, netBlock{Block: b, Network: n.ID})
+		}
+	}
+	sort.Slice(merged, func(i, j int) bool {
+		if merged[i].Time != "" && merged[j].Time != "" {
+			return merged[i].Time > merged[j].Time
+		}
+		return merged[i].Height > merged[j].Height
+	})
+	if len(merged) > limit {
+		merged = merged[:limit]
+	}
+	jsonResponse(w, merged)
 }
 
 func (a *API) HandleBlock(w http.ResponseWriter, r *http.Request) {
